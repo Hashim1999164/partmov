@@ -20,12 +20,7 @@ export async function PUT(req: Request) {
     }
 
     const buf = Buffer.from(await req.arrayBuffer());
-    if (!buf.length) return NextResponse.json({ error: "Empty part" }, { status: 400 });
-    // Keep under typical serverless body limits.
-    if (buf.length > 4.2 * 1024 * 1024) {
-      return NextResponse.json({ error: "Part too large" }, { status: 413 });
-    }
-
+    // Proxy path kept for legacy; large films use signed direct-to-R2 parts.
     const out = await r2Client().send(
       new UploadPartCommand({
         Bucket: originalsBucket(),

@@ -7,11 +7,15 @@ import {
   HeadObjectCommand,
   ListObjectsV2Command,
   PutBucketCorsCommand,
+  PutObjectCommand,
   S3Client,
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "node:crypto";
+import { R2_MULTIPART_PART_SIZE, R2_PROXY_PUT_MAX } from "@/lib/r2-constants";
+
+export { R2_MULTIPART_PART_SIZE, R2_PROXY_PUT_MAX };
 
 const STORAGE_LIMIT_BYTES = Number(process.env.STORAGE_LIMIT_BYTES || 10 * 1024 * 1024 * 1024);
 const STORAGE_GUARD_BYTES = Number(process.env.STORAGE_GUARD_BYTES || 256 * 1024 * 1024);
@@ -87,6 +91,8 @@ export async function ensureR2Cors(client: S3Client) {
     process.env.PUBLIC_APP_URL || "https://partmov.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
   ].filter(Boolean);
   await client.send(
     new PutBucketCorsCommand({
@@ -113,11 +119,15 @@ export async function createMultipartUpload(opts: {
   size: number;
 }) {
   if (!r2Configured()) throw new Error("R2 is not configured");
-  if (opts.size <= 0) throw new Error("Empty file");
   if (opts.size > STORAGE_LIMIT_BYTES) throw new Error("File exceeds storage limit");
 
   const client = r2Client();
-  await assertStorageHeadroom(client, opts.size);
+  await assertStorageHeadroom(client, Math.max(0, opts.size));
+  try {
+    await ensureR2Cors(client);
+  } catch {
+    /* CORS update is best-effort — signed PUTs need it for large files */
+  }
 
   const assetId = randomUUID();
   const objectKey = roomObjectKey(opts.code, assetId, opts.fileName);
@@ -134,6 +144,90 @@ export async function createMultipartUpload(opts: {
   );
   if (!out.UploadId) throw new Error("Could not start multipart upload");
   return { client, assetId, objectKey, uploadId: out.UploadId };
+}
+
+/** Prepare a single-PUT object key (no multipart — avoids R2’s 5 MiB part minimum). */
+export async function preparePutUpload(opts: {
+  code: string;
+  fileName: string;
+  mime: string;
+  size: number;
+}) {
+  if (!r2Configured()) throw new Error("R2 is not configured");
+  if (opts.size > STORAGE_LIMIT_BYTES) throw new Error("File exceeds storage limit");
+  if (opts.size > R2_PROXY_PUT_MAX) {
+    throw new Error("File too large for single PUT — use multipart");
+  }
+
+  const client = r2Client();
+  await assertStorageHeadroom(client, Math.max(0, opts.size));
+  const assetId = randomUUID();
+  const objectKey = roomObjectKey(opts.code, assetId, opts.fileName);
+  return { assetId, objectKey, contentType: opts.mime || "video/mp4" };
+}
+
+export async function putObjectBytes(opts: {
+  objectKey: string;
+  body: Buffer;
+  contentType: string;
+}) {
+  const client = r2Client();
+  await client.send(
+    new PutObjectCommand({
+      Bucket: originalsBucket(),
+      Key: opts.objectKey,
+      Body: opts.body,
+      ContentType: opts.contentType || "video/mp4",
+    }),
+  );
+  const head = await client.send(
+    new HeadObjectCommand({ Bucket: originalsBucket(), Key: opts.objectKey }),
+  );
+  return { size: head.ContentLength || opts.body.length, contentType: head.ContentType || opts.contentType };
+}
+
+export function roomAliveKey(code: string) {
+  return `rooms/${code}/.alive`;
+}
+
+export async function openRoomSession(code: string, meta?: { hostName?: string }) {
+  if (!r2Configured()) throw new Error("R2 is not configured");
+  const client = r2Client();
+  const payload = JSON.stringify({
+    code,
+    openedAt: Date.now(),
+    hostName: meta?.hostName || null,
+  });
+  await client.send(
+    new PutObjectCommand({
+      Bucket: originalsBucket(),
+      Key: roomAliveKey(code),
+      Body: payload,
+      ContentType: "application/json",
+    }),
+  );
+}
+
+export async function roomSessionExists(code: string) {
+  if (!r2Configured()) return false;
+  try {
+    const client = r2Client();
+    await client.send(
+      new HeadObjectCommand({ Bucket: originalsBucket(), Key: roomAliveKey(code) }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function closeRoomSession(code: string) {
+  if (!r2Configured()) return;
+  try {
+    await deleteObjectKeys([roomAliveKey(code)]);
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function signUploadParts(opts: {

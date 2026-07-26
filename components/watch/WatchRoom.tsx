@@ -33,6 +33,15 @@ import { useWindowedR2Player } from "@/hooks/useWindowedR2Player";
 import { fetchPlaybackUrl, refreshPlaybackUrl, streamingV2Enabled } from "@/lib/streaming";
 import { clearPendingMedia, getPendingMedia } from "@/lib/pending-media";
 import { clearRoomEnded, markRoomEnded } from "@/lib/session-storage";
+import {
+  clearR2UploadJob,
+  getR2UploadJob,
+  getR2UploadSubtitle,
+  jobToTransferProgress,
+  useR2UploadJob,
+  useR2UploadUnloadGuard,
+} from "@/lib/r2-upload-job";
+import type { TransferProgress } from "@/hooks/useRoomMedia";
 
 type RailTab = "chat" | "people" | "media" | "settings";
 
@@ -109,8 +118,12 @@ export function WatchRoom({
   const [expireLeftMs, setExpireLeftMs] = useState<number | null>(null);
   const [expiryToast, setExpiryToast] = useState<string | null>(null);
   const expiryNoticesRef = useRef<Set<string>>(new Set());
+  const [uploadInterrupted, setUploadInterrupted] = useState(false);
+  const appliedR2KeyRef = useRef<string | null>(null);
 
   const isHost = role === "host";
+  useR2UploadUnloadGuard();
+  const uploadJob = useR2UploadJob(code);
 
   const inviteUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -157,6 +170,16 @@ export function WatchRoom({
     onSubtitleReceived: (label, url) => subsAddRef.current(label, url),
     onChanging: setChangingTitle,
   });
+
+  const jobTransfer = jobToTransferProgress(uploadJob) as TransferProgress;
+  const dockTransfer: TransferProgress = jobTransfer || media.transfer;
+  const uploadingCloud =
+    Boolean(jobTransfer) ||
+    Boolean(
+      dockTransfer?.via === "r2" &&
+        dockTransfer.direction === "send" &&
+        (dockTransfer.phase === "sending" || dockTransfer.phase === "finalizing"),
+    );
 
   reofferRef.current = () => {
     const current = media.currentMediaForWelcome();
@@ -298,28 +321,51 @@ export function WatchRoom({
   useEffect(() => {
     if (!isHost || !expectR2Film) return;
     let cancelled = false;
+
+    async function applyFromKey(objectKey: string, assetId?: string, title?: string) {
+      if (cancelled || appliedR2KeyRef.current === objectKey) return;
+      await media.applyR2Film(
+        {
+          kind: "r2",
+          title: title || sessionStorage.getItem(`partmov:r2Title:${code}`) || "Shared film",
+          assetId,
+          objectKey,
+        },
+        { broadcast: true },
+      );
+      if (cancelled) return;
+      appliedR2KeyRef.current = objectKey;
+      if (sessionStorage.getItem(`partmov:subsPending:${code}`) === "1") {
+        const pending = await getPendingMedia(code);
+        const subFromJob = getR2UploadSubtitle(code);
+        const subFile = pending?.subtitle || subFromJob;
+        if (subFile && !cancelled) {
+          await media.sendSubtitleFile(subFile);
+          const { fileToSubtitleVtt } = await import("@/lib/media-transfer");
+          const { label, url } = await fileToSubtitleVtt(subFile);
+          if (!cancelled) subs.addTrackFromUrl(label, url);
+          await clearPendingMedia(code);
+        }
+        sessionStorage.removeItem(`partmov:subsPending:${code}`);
+      }
+      clearR2UploadJob(code);
+    }
+
     void (async () => {
       try {
         const objectKey = sessionStorage.getItem(`partmov:r2Key:${code}`);
         const assetId = sessionStorage.getItem(`partmov:r2Asset:${code}`) || undefined;
-        const title =
-          sessionStorage.getItem(`partmov:r2Title:${code}`) ||
-          "Shared film";
-        if (!objectKey || cancelled) return;
-        await media.applyR2Film(
-          { kind: "r2", title, assetId, objectKey },
-          { broadcast: true },
-        );
-        if (sessionStorage.getItem(`partmov:subsPending:${code}`) === "1") {
-          const pending = await getPendingMedia(code);
-          if (pending?.subtitle && !cancelled) {
-            await media.sendSubtitleFile(pending.subtitle);
-            const { fileToSubtitleVtt } = await import("@/lib/media-transfer");
-            const { label, url } = await fileToSubtitleVtt(pending.subtitle);
-            if (!cancelled) subs.addTrackFromUrl(label, url);
-            await clearPendingMedia(code);
-          }
-          sessionStorage.removeItem(`partmov:subsPending:${code}`);
+        const title = sessionStorage.getItem(`partmov:r2Title:${code}`) || undefined;
+        if (objectKey) {
+          await applyFromKey(objectKey, assetId, title);
+          return;
+        }
+
+        // Mid-upload entry: wait for background job (handled by uploadJob effect).
+        const uploading = sessionStorage.getItem(`partmov:r2Uploading:${code}`) === "1";
+        if (uploading && !getR2UploadJob(code) && !uploadJob) {
+          // Reload wiped the in-memory File — cannot resume.
+          setUploadInterrupted(true);
         }
       } catch {
         /* applyR2Film sets mediaError */
@@ -330,6 +376,52 @@ export function WatchRoom({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, expectR2Film, isHost]);
+
+  useEffect(() => {
+    if (!isHost || !uploadJob) return;
+    if (uploadJob.status === "error") {
+      setUploadInterrupted(false);
+      return;
+    }
+    if (uploadJob.status !== "done" || !uploadJob.result) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { objectKey, assetId } = uploadJob.result!;
+        if (cancelled || appliedR2KeyRef.current === objectKey) return;
+        await media.applyR2Film(
+          {
+            kind: "r2",
+            title: uploadJob.title,
+            assetId,
+            objectKey,
+          },
+          { broadcast: true },
+        );
+        if (cancelled) return;
+        appliedR2KeyRef.current = objectKey;
+        if (sessionStorage.getItem(`partmov:subsPending:${code}`) === "1") {
+          const pending = await getPendingMedia(code);
+          const subFile = pending?.subtitle || getR2UploadSubtitle(code);
+          if (subFile && !cancelled) {
+            await media.sendSubtitleFile(subFile);
+            const { fileToSubtitleVtt } = await import("@/lib/media-transfer");
+            const { label, url } = await fileToSubtitleVtt(subFile);
+            if (!cancelled) subs.addTrackFromUrl(label, url);
+            await clearPendingMedia(code);
+          }
+          sessionStorage.removeItem(`partmov:subsPending:${code}`);
+        }
+        clearR2UploadJob(code);
+      } catch {
+        /* applyR2Film sets mediaError */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, isHost, uploadJob?.status, uploadJob?.result?.objectKey]);
 
   useEffect(() => {
     if (!isHost || !expectPendingFile) return;
@@ -738,15 +830,27 @@ export function WatchRoom({
               buffering={
                 buffering ||
                 (useHls && !adaptive.ready) ||
-                (media.media?.kind === "r2" && !windowed.ready && !windowed.error && !windowed.fallbackSrc)
+                (media.media?.kind === "r2" &&
+                  !uploadingCloud &&
+                  !windowed.ready &&
+                  !windowed.error &&
+                  !windowed.fallbackSrc)
               }
-              waitingPartner={sync.partnerState !== "connected" && isHost}
+              waitingPartner={sync.partnerState !== "connected" && isHost && !uploadingCloud}
               partnerName={sync.partnerName}
               waitingMedia={!media.hasPlayableMedia && !useHls}
               changingTitle={
-                media.transfer ? null : changingTitle || media.changingTitle
+                uploadingCloud || dockTransfer ? null : changingTitle || media.changingTitle
               }
-              transferLabel={null}
+              transferLabel={
+                uploadingCloud && dockTransfer
+                  ? `${dockTransfer.pct}% · ${dockTransfer.fileName}`
+                  : uploadInterrupted
+                    ? "Upload was interrupted — reload clears in-progress uploads. Re-add the film from Media."
+                    : uploadJob?.status === "error"
+                      ? uploadJob.error || "Cloud upload failed"
+                      : null
+              }
               reactions={sync.reactions}
               onTimeUpdate={() => {
                 const v = videoRef.current;
@@ -895,9 +999,15 @@ export function WatchRoom({
             <MediaPanel
               isHost={isHost}
               currentTitle={media.media?.title}
-              transfer={media.transfer}
+              transfer={dockTransfer}
               changingTitle={changingTitle || media.changingTitle}
-              error={media.mediaError}
+              error={
+                media.mediaError ||
+                (uploadJob?.status === "error" ? uploadJob.error : null) ||
+                (uploadInterrupted
+                  ? "Upload interrupted by a page reload. Choose the film again in Media."
+                  : null)
+              }
               onPickCatalog={pickCatalog}
               onPasteUrl={pasteUrl}
               onLocalFile={(file) => void media.sendLocalFile(file, { replace: true })}
@@ -929,15 +1039,19 @@ export function WatchRoom({
       <p className="cinema-status" role="status">
         {windowed.error
           ? windowed.error
-          : media.transfer
-          ? `${media.transfer.via === "r2" ? (media.transfer.direction === "send" ? "Uploading to cloud" : "Streaming from cloud") : media.transfer.direction === "send" ? "Sending" : "Receiving"} “${media.transfer.fileName}” · ${media.transfer.pct}%`
-          : changingTitle || media.changingTitle
-            ? `Changing film to “${changingTitle || media.changingTitle}”…`
-            : (sync.error ?? sync.status)}
+          : dockTransfer
+          ? `${dockTransfer.via === "r2" ? (dockTransfer.direction === "send" ? "Uploading to cloud" : "Streaming from cloud") : dockTransfer.direction === "send" ? "Sending" : "Receiving"} “${dockTransfer.fileName}” · ${dockTransfer.pct}%`
+          : uploadInterrupted
+            ? "Upload interrupted — re-add the film from Media."
+            : uploadJob?.status === "error"
+              ? uploadJob.error || "Cloud upload failed"
+              : changingTitle || media.changingTitle
+                ? `Changing film to “${changingTitle || media.changingTitle}”…`
+                : (sync.error ?? sync.status)}
         {media.media?.credit ? ` · ${media.media.credit}` : ""}
       </p>
 
-      <TransferDock transfer={media.transfer} />
+      <TransferDock transfer={dockTransfer} />
       <SessionToast
         message={expiryToast}
         tone={expireLeftMs !== null && expireLeftMs <= 5 * 60 * 1000 ? "warn" : "info"}

@@ -4,9 +4,13 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BROWSE_PRESETS, browseTitleFromUrl, normalizeBrowseUrl, siteLikelyBlocksEmbed } from "@/lib/browse";
 import { createRoomCode, normalizeRoomCode } from "@/lib/catalog";
-import { materializeFile, readFileWithProgress, stashPendingMedia } from "@/lib/pending-media";
+import { materializeFile, stashPendingMedia } from "@/lib/pending-media";
 import { clearAllRoomEnded, clearRoomEnded } from "@/lib/session-storage";
 import { COLOR_CHIPS } from "@/lib/sync-protocol";
+import { ensureR2UnloadGuard, useActiveR2UploadJob, useR2UploadUnloadGuard } from "@/lib/r2-upload-job";
+import { r2Status } from "@/lib/r2-client";
+import { TransferDock } from "./TransferDock";
+import type { TransferProgress } from "@/hooks/useRoomMedia";
 
 function loadPrefName() {
   if (typeof window === "undefined") return "You";
@@ -56,7 +60,25 @@ export function WatchLobby() {
     setColor(loadPrefColor());
     setHydrated(true);
     clearAllRoomEnded();
+    ensureR2UnloadGuard();
   }, []);
+
+  useR2UploadUnloadGuard();
+  const activeUpload = useActiveR2UploadJob();
+  const lobbyTransfer: TransferProgress = activeUpload
+    ? {
+        transferId: `r2-job-${activeUpload.code}`,
+        fileName: activeUpload.fileName,
+        kind: "video",
+        pct: activeUpload.pct,
+        direction: "send",
+        phase: activeUpload.status === "finalizing" || activeUpload.phase === "finalizing" ? "finalizing" : "sending",
+        bytesLoaded: activeUpload.bytesLoaded,
+        bytesTotal: activeUpload.bytesTotal,
+        startedAt: activeUpload.startedAt,
+        via: "r2",
+      }
+    : null;
 
   function persistIdentity(who: string, chip: string) {
     localStorage.setItem("partmov:pref:name", who);
@@ -117,6 +139,8 @@ export function WatchLobby() {
         const who = name.trim() || "Host";
         persistIdentity(who, color);
         clearRoomEnded(code);
+        const { openRoom } = await import("@/lib/r2-client");
+        await openRoom(code, who);
         sessionStorage.setItem(`partmov:name:${code}`, who);
         sessionStorage.setItem(`partmov:role:${code}`, "host");
         sessionStorage.setItem(`partmov:color:${code}`, color);
@@ -135,9 +159,6 @@ export function WatchLobby() {
     setStarting(true);
     setPrepPct(0);
     try {
-      const code = createRoomCode();
-      const who = name.trim() || "Host";
-      const { r2Status, uploadFileToR2 } = await import("@/lib/r2-client");
       const status = await r2Status();
       if (!status.enabled) {
         throw new Error(
@@ -145,57 +166,72 @@ export function WatchLobby() {
         );
       }
 
-      const uploaded = await uploadFileToR2(videoFile, code, (p) => {
-        setPrepPct(p.pct);
-      });
-
-      if (subtitleFile) {
-        setPrepPct(98);
-        await readFileWithProgress(subtitleFile, () => undefined);
-      }
-
+      const { startR2UploadJob } = await import("@/lib/r2-upload-job");
+      const { openRoom } = await import("@/lib/r2-client");
+      const code = createRoomCode();
+      const who = name.trim() || "Host";
+      const title = videoFile.name.replace(/\.[^.]+$/, "") || "Local film";
       persistIdentity(who, color);
       clearRoomEnded(code);
+      await openRoom(code, who);
       sessionStorage.setItem(`partmov:name:${code}`, who);
       sessionStorage.setItem(`partmov:role:${code}`, "host");
       sessionStorage.setItem(`partmov:color:${code}`, color);
       sessionStorage.setItem(`partmov:media:${code}`, "r2");
-      sessionStorage.setItem(`partmov:r2Key:${code}`, uploaded.objectKey);
-      sessionStorage.setItem(`partmov:r2Asset:${code}`, uploaded.assetId);
-      sessionStorage.setItem(
-        `partmov:r2Title:${code}`,
-        videoFile.name.replace(/\.[^.]+$/, "") || "Local film",
-      );
+      sessionStorage.setItem(`partmov:r2Uploading:${code}`, "1");
+      sessionStorage.setItem(`partmov:r2Title:${code}`, title);
 
       if (subtitleFile) {
         await stashPendingMedia(code, {
           video: videoFile,
           subtitle: subtitleFile,
-          title: videoFile.name.replace(/\.[^.]+$/, "") || "Local film",
+          title,
         });
-        // Subtitles still ride local stash; video streams from R2.
         sessionStorage.setItem(`partmov:subsPending:${code}`, "1");
       }
 
-      setPrepPct(100);
+      ensureR2UnloadGuard();
+      startR2UploadJob({
+        code,
+        file: videoFile,
+        title,
+        subtitle: subtitleFile ?? undefined,
+      });
+
+      // Enter the room immediately — upload continues in the background.
+      setPrepPct(null);
       router.push(`/watch/${code}`);
     } catch (err) {
-      setPrepError(err instanceof Error ? err.message : "Could not upload the video to cloud storage");
+      setPrepError(err instanceof Error ? err.message : "Could not start cloud upload");
       setStarting(false);
       setPrepPct(null);
     }
   }
 
-  function joinRoom(e: React.FormEvent) {
+  async function joinRoom(e: React.FormEvent) {
     e.preventDefault();
     const code = normalizeRoomCode(joinCode);
     if (!code) return;
-    const who = name.trim() || "Guest";
-    persistIdentity(who, color);
-    sessionStorage.setItem(`partmov:name:${code}`, who);
-    sessionStorage.setItem(`partmov:role:${code}`, "guest");
-    sessionStorage.setItem(`partmov:color:${code}`, color);
-    router.push(`/watch/${code}?as=guest`);
+    setPrepError(null);
+    setStarting(true);
+    try {
+      const { checkRoomExists } = await import("@/lib/r2-client");
+      const exists = await checkRoomExists(code);
+      if (!exists) {
+        setPrepError("That room isn’t open. Ask the host for a fresh invite, or check the code.");
+        setStarting(false);
+        return;
+      }
+      const who = name.trim() || "Guest";
+      persistIdentity(who, color);
+      sessionStorage.setItem(`partmov:name:${code}`, who);
+      sessionStorage.setItem(`partmov:role:${code}`, "guest");
+      sessionStorage.setItem(`partmov:color:${code}`, color);
+      router.push(`/watch/${code}?as=guest`);
+    } catch (err) {
+      setPrepError(err instanceof Error ? err.message : "Could not check that room");
+      setStarting(false);
+    }
   }
 
   function onDrop(e: React.DragEvent) {
@@ -222,8 +258,8 @@ export function WatchLobby() {
         <span className="eyebrow">Try it live</span>
         <h1>Open a private cinema for two</h1>
         <p className="lede">
-          Upload a film from your device — it goes to R2 cloud storage first, then both of you stream it. Invite
-          your partner and keep the remote.
+          Upload a film, open the room right away, and let the cloud upload finish in the background. Invite your
+          partner and keep the remote — progress stays visible while you wait.
         </p>
       </header>
 
@@ -515,8 +551,8 @@ export function WatchLobby() {
                   ? `Ready to co-browse ${browseTitleFromUrl(browseNormalized)}.`
                   : "Enter a website URL first."
                 : videoFile
-                  ? `Ready to open a room with “${title}”.`
-                  : "Select a video first — the room opens only after the file is ready."}
+                  ? `Ready to open a room with “${title}”. Upload continues in the background.`
+                  : "Select a video first — the room opens immediately and the film uploads in the background."}
             </p>
             <button
               type="button"
@@ -525,14 +561,12 @@ export function WatchLobby() {
               disabled={!canStart}
             >
               {starting
-                ? prepPct != null
-                  ? `Uploading to cloud… ${prepPct}%`
-                  : "Opening room…"
+                ? "Opening room…"
                 : importing
                   ? "Reading file…"
                   : sourceMode === "browse"
                     ? "Start co-browse room"
-                    : "Upload & start room"}
+                    : "Start room — upload in background"}
             </button>
           </div>
 
@@ -550,17 +584,18 @@ export function WatchLobby() {
                 spellCheck={false}
               />
             </label>
-            <button type="submit" className="btn btn--ghost" disabled={!joinCode.trim()}>
-              Enter room
+            <button type="submit" className="btn btn--ghost" disabled={!joinCode.trim() || starting}>
+              {starting ? "Checking room…" : "Enter room"}
             </button>
           </form>
 
           <p className="watch-lobby__note">
-            Tip: open two tabs to demo sync. Films upload to R2 first; both of you stream the same cloud object.
-            Ending the session frees that room’s R2 objects.
+            Tip: the film uploads to R2 in the background after you enter. You’ll see progress in the room —
+            don’t close or reload the tab until it finishes (the browser will warn you).
           </p>
         </div>
       </div>
+      <TransferDock transfer={lobbyTransfer} />
     </div>
   );
 }

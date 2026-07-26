@@ -308,7 +308,7 @@ export function useRoomMedia({
         return;
       }
 
-      const { r2Status, uploadFileToR2 } = await import("@/lib/r2-client");
+      const { r2Status } = await import("@/lib/r2-client");
       const status = await r2Status();
       if (!status.enabled) {
         setMediaError(
@@ -318,8 +318,6 @@ export function useRoomMedia({
       }
 
       const title = file.name.replace(/\.[^.]+$/, "") || "Local film";
-      const sendStarted = Date.now();
-      const transferId = makeTransferId();
 
       if (opts?.replace || media || videoSrc) {
         send({ type: "media_changing", title, seq: Date.now() });
@@ -328,43 +326,23 @@ export function useRoomMedia({
       }
 
       try {
-        const uploaded = await uploadFileToR2(file, code, (p) => {
-          setTransfer({
-            transferId,
-            fileName: file.name,
-            kind: "video",
-            pct: p.pct,
-            direction: "send",
-            phase: p.phase === "finalizing" ? "finalizing" : "sending",
-            bytesLoaded: p.bytesLoaded,
-            bytesTotal: p.bytesTotal,
-            startedAt: sendStarted,
-            via: "r2",
-          });
-        });
-
-        const desc: MediaDescriptor = {
-          kind: "r2",
-          title,
-          assetId: uploaded.assetId,
-          objectKey: uploaded.objectKey,
-        };
-
-        await applyR2Film(desc, { broadcast: true });
+        const { startR2UploadJob, ensureR2UnloadGuard } = await import("@/lib/r2-upload-job");
+        ensureR2UnloadGuard();
         try {
           sessionStorage.setItem(`partmov:media:${code}`, "r2");
-          sessionStorage.setItem(`partmov:r2Key:${code}`, uploaded.objectKey);
-          sessionStorage.setItem(`partmov:r2Asset:${code}`, uploaded.assetId);
+          sessionStorage.setItem(`partmov:r2Uploading:${code}`, "1");
           sessionStorage.setItem(`partmov:r2Title:${code}`, title);
         } catch {
           /* ignore */
         }
+        // Background job — WatchRoom applies the film when upload completes.
+        startR2UploadJob({ code, file, title });
       } catch (err) {
         setTransfer(null);
         setMediaError(err instanceof Error ? err.message : "Cloud upload failed");
       }
     },
-    [applyR2Film, code, media, onChanging, send, videoSrc],
+    [code, media, onChanging, send, videoSrc],
   );
 
   const reofferHeldVideo = useCallback(() => {

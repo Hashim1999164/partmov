@@ -18,6 +18,7 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
   const inviteToken = params.get("token") || undefined;
 
   const [ready, setReady] = useState(false);
+  const [missing, setMissing] = useState(false);
   const [ended, setEnded] = useState<{ message: string } | null>(null);
   const [role, setRole] = useState<Role>("host");
   const [name, setName] = useState("You");
@@ -26,38 +27,77 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
   const [browseUrl, setBrowseUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    const closed = readRoomEnded(code);
-    if (closed) {
-      setEnded({ message: closed.message });
+    let cancelled = false;
+
+    async function boot() {
+      const closed = readRoomEnded(code);
+      if (closed) {
+        if (!cancelled) {
+          setEnded({ message: closed.message });
+          setReady(true);
+        }
+        return;
+      }
+
+      const storedRole = sessionStorage.getItem(`partmov:role:${code}`) as Role | null;
+      const storedName = sessionStorage.getItem(`partmov:name:${code}`);
+      const storedColor =
+        sessionStorage.getItem(`partmov:color:${code}`) ||
+        localStorage.getItem("partmov:pref:color") ||
+        COLOR_CHIPS[0];
+      const storedMedia = sessionStorage.getItem(`partmov:media:${code}`);
+      const storedBrowse = sessionStorage.getItem(`partmov:browseUrl:${code}`);
+      // Only lobby "Start" stamps host into sessionStorage. Cold invite links default to guest
+      // so a second tab/device does not fight the PeerJS host room id.
+      const nextRole: Role = !asGuest && storedRole === "host" ? "host" : "guest";
+      const nextName =
+        storedName ||
+        localStorage.getItem("partmov:pref:name") ||
+        (nextRole === "host" ? "Host" : "Guest");
+
+      try {
+        const { checkRoomExists, openRoom } = await import("@/lib/r2-client");
+        if (nextRole === "host") {
+          await openRoom(code, nextName);
+        } else {
+          const exists = await checkRoomExists(code);
+          if (!exists) {
+            if (!cancelled) {
+              setMissing(true);
+              setReady(true);
+            }
+            return;
+          }
+        }
+      } catch {
+        if (nextRole === "guest") {
+          if (!cancelled) {
+            setMissing(true);
+            setReady(true);
+          }
+          return;
+        }
+      }
+
+      if (cancelled) return;
+
+      sessionStorage.setItem(`partmov:role:${code}`, nextRole);
+      sessionStorage.setItem(`partmov:name:${code}`, nextName);
+      sessionStorage.setItem(`partmov:color:${code}`, storedColor);
+      setRole(nextRole);
+      setName(nextName);
+      setColor(storedColor);
+      setMediaId(nextRole === "host" && storedMedia ? storedMedia : null);
+      setBrowseUrl(nextRole === "host" && storedMedia === "browse" ? storedBrowse : null);
+      setEnded(null);
+      setMissing(false);
       setReady(true);
-      return;
     }
 
-    const storedRole = sessionStorage.getItem(`partmov:role:${code}`) as Role | null;
-    const storedName = sessionStorage.getItem(`partmov:name:${code}`);
-    const storedColor =
-      sessionStorage.getItem(`partmov:color:${code}`) ||
-      localStorage.getItem("partmov:pref:color") ||
-      COLOR_CHIPS[0];
-    const storedMedia = sessionStorage.getItem(`partmov:media:${code}`);
-    const storedBrowse = sessionStorage.getItem(`partmov:browseUrl:${code}`);
-    // Only lobby "Start" stamps host into sessionStorage. Cold invite links default to guest
-    // so a second tab/device does not fight the PeerJS host room id.
-    const nextRole: Role = !asGuest && storedRole === "host" ? "host" : "guest";
-    const nextName =
-      storedName ||
-      localStorage.getItem("partmov:pref:name") ||
-      (nextRole === "host" ? "Host" : "Guest");
-    sessionStorage.setItem(`partmov:role:${code}`, nextRole);
-    sessionStorage.setItem(`partmov:name:${code}`, nextName);
-    sessionStorage.setItem(`partmov:color:${code}`, storedColor);
-    setRole(nextRole);
-    setName(nextName);
-    setColor(storedColor);
-    setMediaId(nextRole === "host" && storedMedia ? storedMedia : null);
-    setBrowseUrl(nextRole === "host" && storedMedia === "browse" ? storedBrowse : null);
-    setEnded(null);
-    setReady(true);
+    void boot();
+    return () => {
+      cancelled = true;
+    };
   }, [asGuest, code]);
 
   if (!code) {
@@ -75,6 +115,20 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
     return (
       <div className="cinema-boot">
         <p>Preparing the room…</p>
+      </div>
+    );
+  }
+
+  if (missing) {
+    return (
+      <div className="cinema-boot">
+        <h1>Room not found</h1>
+        <p>No live session uses that code. Ask the host for a fresh invite.</p>
+        <div className="cinema-boot__actions">
+          <a className="btn btn--primary" href="/watch">
+            Back to lobby
+          </a>
+        </div>
       </div>
     );
   }

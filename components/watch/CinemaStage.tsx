@@ -112,7 +112,14 @@ export function CinemaStage({
       {waitingMedia && !changingTitle && !buffering && countdown === null && (
         <div className="cinema-stage__overlay">
           <div className="cinema-stage__spinner" />
-          <p>Waiting for the film…</p>
+          {transferLabel ? (
+            <>
+              <p>{/\d+%/.test(transferLabel) ? "Uploading to cloud…" : "Can’t start playback"}</p>
+              <p className="cinema-stage__overlay-sub">{transferLabel}</p>
+            </>
+          ) : (
+            <p>Waiting for the film…</p>
+          )}
         </div>
       )}
 

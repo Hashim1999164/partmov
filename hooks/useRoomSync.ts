@@ -76,6 +76,7 @@ export function useRoomSync({
   const suppressLeaveNotifyRef = useRef(false);
   const becomingHostRef = useRef(false);
   const endedRef = useRef(false);
+  const everPairedRef = useRef(false);
 
   const getCurrentMediaRef = useRef(getCurrentMedia);
   getCurrentMediaRef.current = getCurrentMedia;
@@ -559,6 +560,15 @@ export function useRoomSync({
             setError("That room code is already live. Ask for a fresh invite.");
             return;
           }
+          if (
+            !isHost &&
+            !everPairedRef.current &&
+            (message.includes("peer-unavailable") || message.includes("Could not connect"))
+          ) {
+            setError("This room isn’t available. Ask the host for a fresh invite.");
+            setStatus("Room not found");
+            return;
+          }
           setStatus((prev) => (partnerState === "connected" ? prev : "Looking for your partner…"));
         });
 
@@ -582,13 +592,20 @@ export function useRoomSync({
       connRef.current = conn;
       conn.on("open", () => {
         setPartnerState("connected");
+        everPairedRef.current = true;
         send({ type: "hello", role: roleRef.current, name, color });
       });
       conn.on("data", (data) => onMessage(data as SyncMessage));
       conn.on("close", () => {
         if (endedRef.current || becomingHostRef.current) return;
-        // Unexpected host drop → guest inherits the room (same as explicit leave).
+        // Unexpected host drop → guest inherits only if we were actually paired.
         if (roleRef.current === "guest") {
+          if (!everPairedRef.current) {
+            setPartnerState("waiting");
+            setError("This room isn’t available. Ask the host for a fresh invite.");
+            setStatus("Room not found");
+            return;
+          }
           becomingHostRef.current = true;
           suppressLeaveNotifyRef.current = true;
           setPartnerState("waiting");
@@ -606,6 +623,12 @@ export function useRoomSync({
         }
         setPartnerState("reconnecting");
         setStatus("Connection dropped — trying to recover");
+      });
+      conn.on("error", () => {
+        if (roleRef.current === "guest" && !everPairedRef.current) {
+          setError("This room isn’t available. Ask the host for a fresh invite.");
+          setStatus("Room not found");
+        }
       });
     }
 
