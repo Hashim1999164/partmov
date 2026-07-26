@@ -25,6 +25,8 @@ import { SettingsPanel } from "./SettingsPanel";
 import { InviteSheet } from "./InviteSheet";
 import { useAdaptivePlayer } from "@/hooks/useAdaptivePlayer";
 import { fetchPlaybackUrl, refreshPlaybackUrl, streamingV2Enabled } from "@/lib/streaming";
+import { clearPendingMedia, getPendingMedia } from "@/lib/pending-media";
+import { markRoomEnded } from "@/lib/session-storage";
 
 type RailTab = "chat" | "people" | "media" | "settings";
 
@@ -34,6 +36,8 @@ type Props = {
   name: string;
   color: string;
   initialMediaId?: string | null;
+  /** Host started from lobby with a stashed local file. */
+  expectPendingFile?: boolean;
   passphraseGate?: string;
   /** Streaming V2 server room UUID */
   serverRoomId?: string;
@@ -57,6 +61,7 @@ export function WatchRoom({
   name,
   color,
   initialMediaId,
+  expectPendingFile = false,
   passphraseGate,
   serverRoomId,
   inviteToken,
@@ -120,15 +125,26 @@ export function WatchRoom({
   const syncSendRef = useRef<(msg: import("@/lib/sync-protocol").SyncMessage) => void>(() => undefined);
   const subsAddRef = useRef<(label: string, url: string) => void>(() => undefined);
   const wipeAllRef = useRef<() => void>(() => undefined);
+  const reofferRef = useRef<() => void>(() => undefined);
+  const mediaWelcomeRef = useRef<() => MediaDescriptor | null>(() => null);
+  const partnerConnectedRef = useRef(false);
 
   const subs = useSubtitles();
   subsAddRef.current = subs.addTrackFromUrl;
 
+  const [changingTitle, setChangingTitle] = useState<string | null>(null);
+
   const media = useRoomMedia({
     initial: initialMedia,
+    allowCatalogDefault: false,
+    getPartnerConnected: () => partnerConnectedRef.current,
     send: (msg) => syncSendRef.current(msg),
     onSubtitleReceived: (label, url) => subsAddRef.current(label, url),
+    onChanging: setChangingTitle,
   });
+
+  reofferRef.current = () => media.reofferHeldVideo();
+  mediaWelcomeRef.current = () => media.currentMediaForWelcome();
 
   const useHls =
     streamingV2Enabled &&
@@ -188,11 +204,7 @@ export function WatchRoom({
   const finishSession = useCallback(
     (_reason: RoomEndReason, message: string) => {
       wipeAllRef.current();
-      try {
-        sessionStorage.removeItem(`partmov:media:${code}`);
-      } catch {
-        /* ignore */
-      }
+      markRoomEnded(code, message);
       const v = videoRef.current;
       if (v) {
         v.pause();
@@ -233,8 +245,16 @@ export function WatchRoom({
         /* ignore */
       }
     },
+    getCurrentMedia: () => mediaWelcomeRef.current(),
+    onGuestNeedsMedia: () => reofferRef.current(),
+    onMediaChanging: (title) => {
+      setChangingTitle(title);
+      media.onMediaChanging(title);
+    },
+    onMediaClear: () => media.onMediaClear(),
   });
 
+  partnerConnectedRef.current = sync.partnerState === "connected";
   syncSendRef.current = sync.send;
 
   wipeAllRef.current = () => {
@@ -242,6 +262,28 @@ export function WatchRoom({
     subs.clearTracks();
     sync.setChat([]);
   };
+
+  useEffect(() => {
+    if (!isHost || !expectPendingFile) return;
+    let cancelled = false;
+    void (async () => {
+      const pending = await getPendingMedia(code);
+      if (cancelled || !pending) return;
+      await media.sendLocalFile(pending.video, { replace: false });
+      if (cancelled) return;
+      if (pending.subtitle) {
+        await media.sendSubtitleFile(pending.subtitle);
+        const { fileToSubtitleVtt } = await import("@/lib/media-transfer");
+        const { label, url } = await fileToSubtitleVtt(pending.subtitle);
+        if (!cancelled) subs.addTrackFromUrl(label, url);
+      }
+      if (!cancelled) await clearPendingMedia(code);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, expectPendingFile, isHost]);
 
   // Wire media broadcast helpers to sync seq
   const pickCatalog = useCallback(
@@ -516,7 +558,7 @@ export function WatchRoom({
         <div className="cinema-main" ref={stageRef}>
           <CinemaStage
             videoRef={videoRef}
-            src={useHls ? undefined : media.videoSrc}
+            src={useHls ? undefined : media.videoSrc || undefined}
             hlsManaged={useHls}
             poster={media.poster}
             tracks={subs.tracks}
@@ -527,6 +569,13 @@ export function WatchRoom({
             buffering={buffering || (useHls && !adaptive.ready)}
             waitingPartner={sync.partnerState !== "connected" && isHost}
             partnerName={sync.partnerName}
+            waitingMedia={!media.hasPlayableMedia && !useHls}
+            changingTitle={changingTitle || media.changingTitle}
+            transferLabel={
+              media.transfer
+                ? `${media.transfer.direction === "send" ? "Sending" : "Receiving"} ${media.transfer.fileName} · ${media.transfer.pct}%`
+                : null
+            }
             reactions={sync.reactions}
             onTimeUpdate={() => {
               const v = videoRef.current;
@@ -664,10 +713,11 @@ export function WatchRoom({
               isHost={isHost}
               currentTitle={media.media?.title}
               transfer={media.transfer}
+              changingTitle={changingTitle || media.changingTitle}
               error={media.mediaError}
               onPickCatalog={pickCatalog}
               onPasteUrl={pasteUrl}
-              onLocalFile={(file) => void media.sendLocalFile(file)}
+              onLocalFile={(file) => void media.sendLocalFile(file, { replace: true })}
             />
           )}
           {railTab === "settings" && (
@@ -686,7 +736,9 @@ export function WatchRoom({
       </div>
 
       <p className="cinema-status" role="status">
-        {sync.error ?? sync.status}
+        {changingTitle || media.changingTitle
+          ? `Changing film to “${changingTitle || media.changingTitle}”…`
+          : (sync.error ?? sync.status)}
         {media.media?.credit ? ` · ${media.media.credit}` : ""}
       </p>
 

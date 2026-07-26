@@ -18,6 +18,9 @@ type Props = {
   buffering: boolean;
   waitingPartner: boolean;
   partnerName: string | null;
+  waitingMedia?: boolean;
+  changingTitle?: string | null;
+  transferLabel?: string | null;
   reactions: { id: string; glyph: string; name: string }[];
   onTimeUpdate: () => void;
   onLoadedMetadata: () => void;
@@ -40,6 +43,9 @@ export function CinemaStage({
   buffering,
   waitingPartner,
   partnerName,
+  waitingMedia = false,
+  changingTitle = null,
+  transferLabel = null,
   reactions,
   onTimeUpdate,
   onLoadedMetadata,
@@ -91,14 +97,30 @@ export function CinemaStage({
         </div>
       )}
 
-      {buffering && countdown === null && (
+      {changingTitle && !countdown && (
+        <div className="cinema-stage__overlay">
+          <div className="cinema-stage__spinner" />
+          <p>Host is changing the film</p>
+          <p className="cinema-stage__overlay-sub">{changingTitle}</p>
+          {transferLabel ? <p className="cinema-stage__overlay-sub">{transferLabel}</p> : null}
+        </div>
+      )}
+
+      {waitingMedia && !changingTitle && !buffering && countdown === null && (
+        <div className="cinema-stage__overlay">
+          <div className="cinema-stage__spinner" />
+          <p>Waiting for the film…</p>
+        </div>
+      )}
+
+      {buffering && countdown === null && !changingTitle && (
         <div className="cinema-stage__overlay">
           <div className="cinema-stage__spinner" />
           <p>Buffering…</p>
         </div>
       )}
 
-      {waitingPartner && !buffering && countdown === null && (
+      {waitingPartner && !waitingMedia && !changingTitle && !buffering && countdown === null && (
         <div className="cinema-stage__overlay cinema-stage__overlay--soft">
           <p>Waiting for {partnerName ?? "your partner"}</p>
         </div>

@@ -8,12 +8,14 @@ type Transfer = {
   kind: "video" | "subtitle";
   pct: number;
   direction: "send" | "receive";
+  phase?: string;
 } | null;
 
 type Props = {
   isHost: boolean;
   currentTitle?: string;
   transfer: Transfer;
+  changingTitle?: string | null;
   error: string | null;
   onPickCatalog: (id: string) => void;
   onPasteUrl: (url: string, title: string) => boolean;
@@ -24,6 +26,7 @@ export function MediaPanel({
   isHost,
   currentTitle,
   transfer,
+  changingTitle,
   error,
   onPickCatalog,
   onPasteUrl,
@@ -36,8 +39,9 @@ export function MediaPanel({
     return (
       <div className="rail-panel">
         <h3>Media</h3>
-        <p className="rail-panel__muted">Now playing: {currentTitle ?? "—"}</p>
+        <p className="rail-panel__muted">Now playing: {currentTitle ?? "Waiting for host…"}</p>
         <p className="rail-panel__muted">Only the host can change the film.</p>
+        {changingTitle && <p className="rail-panel__muted">Host is changing to “{changingTitle}”…</p>}
         {transfer && (
           <div className="transfer-bar">
             <span>
@@ -56,52 +60,17 @@ export function MediaPanel({
     <div className="rail-panel">
       <h3>Media</h3>
       <p className="rail-panel__muted">
-        Film stays on each device for this session — nothing uploaded to Partmov. Pick a free catalog title, paste a
-        direct HTTPS link, or send a file from your disk over WebRTC.
+        Now playing: {currentTitle ?? "—"}. Changing the film notifies your partner, transfers the new file, then wipes
+        the previous one on every device.
       </p>
 
-      <div className="media-grid">
-        {CATALOG.map((film) => (
-          <button key={film.id} type="button" className="media-tile" onClick={() => onPickCatalog(film.id)}>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={film.poster} alt="" onError={(e) => {
-              const t = e.currentTarget;
-              if (film.fallbackPoster) t.src = film.fallbackPoster;
-            }} />
-            <span>{film.title}</span>
-          </button>
-        ))}
-      </div>
-
-      <form
-        className="stack stack--sm"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (onPasteUrl(url, title)) {
-            setUrl("");
-            setTitle("");
-          }
-        }}
-      >
-        <label className="watch-field">
-          <span>Public HTTPS URL</span>
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…/film.mp4" />
-        </label>
-        <label className="watch-field">
-          <span>Title (optional)</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Tonight’s pick" />
-        </label>
-        <button type="submit" className="btn btn--ghost">
-          Load URL for both
-        </button>
-      </form>
-
       <label className="btn btn--primary sheet__file">
-        Choose local file
+        {currentTitle ? "Replace with local file" : "Choose local file"}
         <input
           type="file"
           accept="video/mp4,video/webm,video/ogg,.mp4,.webm"
           hidden
+          disabled={Boolean(transfer)}
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) onLocalFile(f);
@@ -113,7 +82,9 @@ export function MediaPanel({
       {transfer && (
         <div className="transfer-bar">
           <span>
-            {transfer.direction === "send" ? "Sending" : "Receiving"} {transfer.fileName}… {transfer.pct}%
+            {transfer.phase === "waiting_peer"
+              ? `Waiting for partner to finish receiving ${transfer.fileName}…`
+              : `${transfer.direction === "send" ? "Sending" : "Receiving"} ${transfer.fileName}… ${transfer.pct}%`}
           </span>
           <div className="transfer-bar__track">
             <i style={{ width: `${transfer.pct}%` }} />
@@ -121,14 +92,60 @@ export function MediaPanel({
         </div>
       )}
 
-      {error && <p className="rail-panel__error">{error}</p>}
+      {changingTitle && !transfer && (
+        <p className="rail-panel__muted">Switching to “{changingTitle}”…</p>
+      )}
 
-      <div className="rail-panel__fallback">
-        <p className="rail-panel__muted">
-          Local file / PeerJS transfer remains the demo fallback. Production ABR HLS requires Streaming V2
-          (`NEXT_PUBLIC_STREAMING_V2=true`) and the self-hosted API worker stack.
-        </p>
-      </div>
+      <details className="media-advanced">
+        <summary>Catalog or public URL</summary>
+        <div className="media-grid">
+          {CATALOG.map((film) => (
+            <button
+              key={film.id}
+              type="button"
+              className="media-tile"
+              disabled={Boolean(transfer)}
+              onClick={() => onPickCatalog(film.id)}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={film.poster}
+                alt=""
+                onError={(e) => {
+                  const t = e.currentTarget;
+                  if (film.fallbackPoster) t.src = film.fallbackPoster;
+                }}
+              />
+              <span>{film.title}</span>
+            </button>
+          ))}
+        </div>
+
+        <form
+          className="stack stack--sm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (onPasteUrl(url, title)) {
+              setUrl("");
+              setTitle("");
+            }
+          }}
+        >
+          <label className="watch-field">
+            <span>Public HTTPS URL</span>
+            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://…/film.mp4" />
+          </label>
+          <label className="watch-field">
+            <span>Title (optional)</span>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Tonight’s pick" />
+          </label>
+          <button type="submit" className="btn btn--ghost" disabled={Boolean(transfer)}>
+            Load URL for both
+          </button>
+        </form>
+      </details>
+
+      {error && <p className="rail-panel__error">{error}</p>}
     </div>
   );
 }

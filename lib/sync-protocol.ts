@@ -108,9 +108,13 @@ export type SyncMessage =
   | { type: "sync_ping"; t0: number }
   | { type: "sync_pong"; t0: number; t1: number; t2: number }
   | { type: "media_set"; media: MediaDescriptor; seq: number }
+  | { type: "media_changing"; title: string; seq: number }
+  | { type: "media_clear"; seq: number }
   | { type: "file_offer"; transferId: string; fileName: string; mime: string; size: number; kind: "video" | "subtitle"; label?: string }
   | { type: "file_chunk"; transferId: string; index: number; total: number; data: string }
+  | { type: "file_chunk_ack"; transferId: string; index: number; total: number }
   | { type: "file_done"; transferId: string; sha?: string }
+  | { type: "file_ready"; transferId: string; kind: "video" | "subtitle" }
   | { type: "subtitle_set"; trackId: string | null; seq: number }
   | { type: "track_changed"; subtitleTrackId: string | null; seq: number }
   | { type: "control_mode"; mode: ControlMode; remoteHolder: Role; seq: number }

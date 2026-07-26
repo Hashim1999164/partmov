@@ -31,6 +31,12 @@ type UseRoomSyncArgs = {
   onSubtitleFromPeer?: (trackId: string | null) => void;
   onRoomEnded?: (reason: import("@/lib/sync-protocol").RoomEndReason, message: string) => void;
   onBecomeHost?: () => void;
+  /** Host: current media snapshot for welcome handshake. */
+  getCurrentMedia?: () => MediaDescriptor | null;
+  /** Host: re-send held local file when a guest joins late. */
+  onGuestNeedsMedia?: () => void;
+  onMediaChanging?: (title: string) => void;
+  onMediaClear?: () => void;
 };
 
 export function useRoomSync({
@@ -46,6 +52,10 @@ export function useRoomSync({
   onSubtitleFromPeer,
   onRoomEnded,
   onBecomeHost,
+  getCurrentMedia,
+  onGuestNeedsMedia,
+  onMediaChanging,
+  onMediaClear,
 }: UseRoomSyncArgs) {
   const isHost = role === "host";
   const peerRef = useRef<Peer | null>(null);
@@ -67,8 +77,17 @@ export function useRoomSync({
   const becomingHostRef = useRef(false);
   const endedRef = useRef(false);
 
+  const getCurrentMediaRef = useRef(getCurrentMedia);
+  getCurrentMediaRef.current = getCurrentMedia;
+  const onGuestNeedsMediaRef = useRef(onGuestNeedsMedia);
+  onGuestNeedsMediaRef.current = onGuestNeedsMedia;
+  const onMediaChangingRef = useRef(onMediaChanging);
+  onMediaChangingRef.current = onMediaChanging;
+  const onMediaClearRef = useRef(onMediaClear);
+  onMediaClearRef.current = onMediaClear;
+
   const [partnerName, setPartnerName] = useState<string | null>(null);
-  const [partnerColor, setPartnerColor] = useState("#86AB9D");
+  const [partnerColor, setPartnerColor] = useState("#4BCE97");
   const [partnerState, setPartnerState] = useState<PartnerState>("waiting");
   const [partnerReady, setPartnerReady] = useState(false);
   const [selfReady, setSelfReady] = useState(false);
@@ -207,9 +226,26 @@ export function useRoomSync({
       if (
         msg.type === "file_offer" ||
         msg.type === "file_chunk" ||
-        msg.type === "file_done"
+        msg.type === "file_done" ||
+        msg.type === "file_chunk_ack" ||
+        msg.type === "file_ready"
       ) {
         onFileMessage?.(msg);
+        return;
+      }
+
+      if (msg.type === "media_changing") {
+        onMediaChangingRef.current?.(msg.title);
+        const video = videoRef.current;
+        if (video && !video.paused) video.pause();
+        setPlayState("paused");
+        setStatus(`Host is changing the film to “${msg.title}”…`);
+        return;
+      }
+
+      if (msg.type === "media_clear") {
+        onMediaClearRef.current?.();
+        setStatus("Waiting for the host’s film…");
         return;
       }
 
@@ -218,15 +254,20 @@ export function useRoomSync({
         setPartnerColor(msg.color);
         setPartnerState("connected");
         setStatus(`${msg.name} joined the room`);
+        const current = getCurrentMediaRef.current?.() ?? null;
         send({
           type: "welcome",
           name,
           color,
           settings: settingsRef.current,
-          media: null,
+          media: current,
           controlMode,
           remoteHolder,
         });
+        if (current?.kind === "file" || !current) {
+          // Late joiner needs the bytes (or still waiting for host upload).
+          window.setTimeout(() => onGuestNeedsMediaRef.current?.(), 40);
+        }
         if (settingsRef.current.joinSound) {
           try {
             const ctx = new AudioContext();
@@ -253,7 +294,8 @@ export function useRoomSync({
         setRemoteHolder(msg.remoteHolder);
         onSettingsFromPeer?.(msg.settings);
         if (msg.media) onMediaFromPeer?.(msg.media);
-        setStatus(`Connected with ${msg.name}`);
+        else setStatus(`Connected with ${msg.name} — waiting for their film…`);
+        if (msg.media) setStatus(`Connected with ${msg.name}`);
         return;
       }
 
@@ -387,6 +429,11 @@ export function useRoomSync({
       if (msg.type === "media_set") {
         seqRef.current = Math.max(seqRef.current, msg.seq);
         onMediaFromPeer?.(msg.media);
+        setStatus(
+          msg.media.title
+            ? `Ready — now playing “${msg.media.title}”`
+            : "Ready — film updated",
+        );
         return;
       }
 

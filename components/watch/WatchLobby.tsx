@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CATALOG, createRoomCode, normalizeRoomCode } from "@/lib/catalog";
+import { createRoomCode, normalizeRoomCode } from "@/lib/catalog";
+import { readFileWithProgress, stashPendingMedia } from "@/lib/pending-media";
+import { clearRoomEnded } from "@/lib/session-storage";
 import { COLOR_CHIPS } from "@/lib/sync-protocol";
 
 function loadPrefName() {
@@ -20,7 +22,11 @@ export function WatchLobby() {
   const [name, setName] = useState("You");
   const [color, setColor] = useState<string>(COLOR_CHIPS[0]);
   const [joinCode, setJoinCode] = useState("");
-  const [mediaId, setMediaId] = useState<string | "later">(CATALOG[0]?.id ?? "later");
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [subtitleFile, setSubtitleFile] = useState<File | null>(null);
+  const [prepPct, setPrepPct] = useState<number | null>(null);
+  const [prepError, setPrepError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -34,15 +40,38 @@ export function WatchLobby() {
     localStorage.setItem("partmov:pref:color", chip);
   }
 
-  function startRoom() {
-    const code = createRoomCode();
-    const who = name.trim() || "Host";
-    persistIdentity(who, color);
-    sessionStorage.setItem(`partmov:name:${code}`, who);
-    sessionStorage.setItem(`partmov:role:${code}`, "host");
-    sessionStorage.setItem(`partmov:color:${code}`, color);
-    if (mediaId !== "later") sessionStorage.setItem(`partmov:media:${code}`, mediaId);
-    router.push(`/watch/${code}`);
+  async function startRoom() {
+    if (!videoFile || starting) return;
+    setPrepError(null);
+    setStarting(true);
+    setPrepPct(0);
+    try {
+      // Real read progress before the room exists (IndexedDB stash).
+      await readFileWithProgress(videoFile, setPrepPct);
+      if (subtitleFile) {
+        setPrepPct(96);
+        await readFileWithProgress(subtitleFile, (p) => setPrepPct(96 + Math.round(p * 0.04)));
+      }
+      const code = createRoomCode();
+      const who = name.trim() || "Host";
+      persistIdentity(who, color);
+      clearRoomEnded(code);
+      sessionStorage.setItem(`partmov:name:${code}`, who);
+      sessionStorage.setItem(`partmov:role:${code}`, "host");
+      sessionStorage.setItem(`partmov:color:${code}`, color);
+      sessionStorage.setItem(`partmov:media:${code}`, "file");
+      await stashPendingMedia(code, {
+        video: videoFile,
+        subtitle: subtitleFile ?? undefined,
+        title: videoFile.name.replace(/\.[^.]+$/, "") || "Local film",
+      });
+      setPrepPct(100);
+      router.push(`/watch/${code}`);
+    } catch (err) {
+      setPrepError(err instanceof Error ? err.message : "Could not prepare the video");
+      setStarting(false);
+      setPrepPct(null);
+    }
   }
 
   function joinRoom(e: React.FormEvent) {
@@ -57,42 +86,41 @@ export function WatchLobby() {
     router.push(`/watch/${code}?as=guest`);
   }
 
+  const canStart = Boolean(videoFile) && !starting && hydrated;
+
   return (
     <div className="watch-lobby shell">
       <header className="watch-lobby__hero">
         <span className="eyebrow">Try it live</span>
         <h1>Open a private cinema for two</h1>
         <p className="lede">
-          No accounts. Choose a name and color, pick an open-source film (or bring your own later), then invite your
-          partner. Sync stays on the wire — the film lives on each device for the session.
+          Choose a video on your device first (subtitles optional). The room opens only after that file is ready —
+          your partner receives the same film peer-to-peer, and you keep the remote.
         </p>
       </header>
 
       <div className="watch-lobby__grid">
         <article className="watch-lobby__card">
-          <div className="watch-lobby__poster-wrap">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              className="watch-lobby__poster"
-              src={
-                mediaId === "later"
-                  ? CATALOG[0]?.poster
-                  : CATALOG.find((f) => f.id === mediaId)?.poster ?? CATALOG[0]?.poster
-              }
-              alt=""
-            />
+          <div className="watch-lobby__poster-wrap watch-lobby__poster-wrap--upload">
+            {videoFile ? (
+              <div className="watch-lobby__file-preview">
+                <strong>{videoFile.name}</strong>
+                <span>{(videoFile.size / (1024 * 1024)).toFixed(1)} MB</span>
+                {subtitleFile ? <span>Subtitles: {subtitleFile.name}</span> : null}
+              </div>
+            ) : (
+              <div className="watch-lobby__file-preview watch-lobby__file-preview--empty">
+                <strong>Select a video to begin</strong>
+                <span>MP4 or WebM · stays on your devices</span>
+              </div>
+            )}
           </div>
           <div className="watch-lobby__film">
-            <span className="eyebrow">Opening film</span>
-            <h2>
-              {mediaId === "later"
-                ? "Choose later in the room"
-                : CATALOG.find((f) => f.id === mediaId)?.title ?? "Catalog"}
-            </h2>
+            <span className="eyebrow">Session media</span>
+            <h2>{videoFile ? videoFile.name.replace(/\.[^.]+$/, "") : "No video selected"}</h2>
             <p>
-              {mediaId === "later"
-                ? "Host can load a catalog title, paste a public URL, or send a local file over WebRTC."
-                : CATALOG.find((f) => f.id === mediaId)?.blurb}
+              Upload is required before a room is created. When you change the film later, everyone waits until the
+              new file finishes transferring — then the old one is wiped.
             </p>
           </div>
         </article>
@@ -124,27 +152,54 @@ export function WatchLobby() {
             </div>
           </div>
 
-          <div className="watch-field">
-            <span>Initial media (host)</span>
-            <select
-              value={mediaId}
-              onChange={(e) => setMediaId(e.target.value as string | "later")}
-              disabled={!hydrated}
-            >
-              {CATALOG.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.title}
-                </option>
-              ))}
-              <option value="later">Choose later in room</option>
-            </select>
-          </div>
-
           <div className="watch-lobby__panel">
             <h3>Start as host</h3>
-            <p>You hold the remote. Share the invite when the room is ready.</p>
-            <button type="button" className="btn btn--primary" onClick={startRoom}>
-              Start private room
+            <p>Pick the film first. The invite opens only after preparation finishes.</p>
+
+            <label className="btn btn--ghost sheet__file">
+              {videoFile ? "Change video" : "Select video"}
+              <input
+                type="file"
+                accept="video/mp4,video/webm,video/ogg,.mp4,.webm,.mov"
+                hidden
+                disabled={starting}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setVideoFile(f);
+                  setPrepError(null);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+
+            <label className="btn btn--ghost sheet__file">
+              {subtitleFile ? "Change subtitles" : "Add subtitles (optional)"}
+              <input
+                type="file"
+                accept=".vtt,.srt,text/vtt"
+                hidden
+                disabled={starting}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setSubtitleFile(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+
+            {prepPct !== null && (
+              <div className="transfer-bar">
+                <span>Preparing upload… {prepPct}%</span>
+                <div className="transfer-bar__track">
+                  <i style={{ width: `${prepPct}%` }} />
+                </div>
+              </div>
+            )}
+
+            {prepError && <p className="rail-panel__error">{prepError}</p>}
+
+            <button type="button" className="btn btn--primary" onClick={() => void startRoom()} disabled={!canStart}>
+              {starting ? "Preparing…" : "Start private room"}
             </button>
           </div>
 
@@ -167,8 +222,8 @@ export function WatchLobby() {
           </form>
 
           <p className="watch-lobby__note">
-            Tip: open two tabs to demo sync. Catalog films and public URLs load on each device; local files transfer
-            peer-to-peer.
+            Tip: open two tabs to demo sync. Local files transfer peer-to-peer — nothing is stored on Partmov’s
+            servers for this demo path.
           </p>
         </div>
       </div>
