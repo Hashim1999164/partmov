@@ -545,7 +545,7 @@ wss.on("connection", (ws) => {
           await pool.query(
             `UPDATE room_participants SET left_at = NULL, connection_state = 'connected',
              display_name = $2, color = $3 WHERE id = $1`,
-            [row.id, msg.displayName.slice(0, 32) || "Viewer", msg.color || "#C4A484"],
+            [row.id, msg.displayName.slice(0, 32) || "Viewer", msg.color || "#1868DB"],
           );
 
           // Keep host if still present; otherwise restore this participant's DB role.
@@ -558,7 +558,7 @@ wss.on("connection", (ws) => {
             roomId: room.roomId,
             role,
             displayName: msg.displayName.slice(0, 32) || "Viewer",
-            color: msg.color || "#C4A484",
+            color: msg.color || "#1868DB",
           };
           room.clients.set(client.participantId, client);
 
@@ -622,7 +622,7 @@ wss.on("connection", (ws) => {
         const inserted = await pool.query<{ id: string }>(
           `INSERT INTO room_participants (room_id, display_name, color, role, connection_state)
            VALUES ($1, $2, $3, $4, 'connected') RETURNING id`,
-          [room.roomId, msg.displayName.slice(0, 32) || "Viewer", msg.color || "#C4A484", role],
+          [room.roomId, msg.displayName.slice(0, 32) || "Viewer", msg.color || "#1868DB", role],
         );
 
         client = {
@@ -631,7 +631,7 @@ wss.on("connection", (ws) => {
           roomId: room.roomId,
           role,
           displayName: msg.displayName.slice(0, 32) || "Viewer",
-          color: msg.color || "#C4A484",
+          color: msg.color || "#1868DB",
         };
         room.clients.set(client.participantId, client);
 

@@ -92,7 +92,7 @@ export function InviteSheet({ open, onClose, code, inviteUrl, passphrase, onPass
           role="img"
           aria-label="Invite pattern"
         >
-          <rect width={dim} height={dim} fill="#F4EDE4" />
+          <rect width={dim} height={dim} fill="#FFFFFF" />
           {modules.map((row, y) =>
             row.map((on, x) =>
               on ? (
@@ -102,7 +102,7 @@ export function InviteSheet({ open, onClose, code, inviteUrl, passphrase, onPass
                   y={pad + y * cell}
                   width={cell}
                   height={cell}
-                  fill="#0B0A09"
+                  fill="#1F1F21"
                 />
               ) : null,
             ),

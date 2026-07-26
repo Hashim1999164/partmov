@@ -223,7 +223,7 @@ export function initials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-export const COLOR_CHIPS = ["#C4A484", "#86AB9D", "#D9A95C", "#A78BFA", "#F07178", "#7EB8DA"] as const;
+export const COLOR_CHIPS = ["#1868DB", "#669DF1", "#4BCE97", "#FF5129", "#FBC828", "#CECFD2"] as const;
 
 export function canControlPlayback(
   role: Role,

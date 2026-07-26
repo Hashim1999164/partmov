@@ -1,24 +1,20 @@
 import type { Metadata } from "next";
-import { Fraunces, Manrope, JetBrains_Mono } from "next/font/google";
+import { Plus_Jakarta_Sans, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const display = Fraunces({
-  subsets: ["latin"],
-  display: "swap",
-  axes: ["SOFT", "WONK", "opsz"],
-  variable: "--font-display",
-});
-
-const body = Manrope({
+/** Loom Lens uses a soft product sans; Plus Jakarta Sans is the closest public match. */
+const sans = Plus_Jakarta_Sans({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-body",
+  weight: ["400", "500", "600", "700"],
 });
 
 const mono = JetBrains_Mono({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-mono",
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -41,7 +37,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html
       lang="en"
       data-scroll-behavior="smooth"
-      className={`${display.variable} ${body.variable} ${mono.variable}`}
+      data-theme="dark"
+      className={`${sans.variable} ${mono.variable}`}
     >
       <body>
         <noscript>

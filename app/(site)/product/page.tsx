@@ -123,7 +123,7 @@ export default function ProductPage() {
       <Section
         eyebrow="Interface"
         title="Five surfaces, one job each"
-        lede="The room is quiet on purpose. Warm charcoal, ivory type, a single copper accent, and transitions measured in fractions of a second."
+        lede="The room stays quiet on purpose. Loom-like dark surfaces, solid blue accents, and transitions measured in fractions of a second."
       >
         <div className="stack stack--md">
           <RoomMock />
@@ -131,17 +131,17 @@ export default function ProductPage() {
           <List
             items={[
               <>
-                <strong>Palette</strong> — background <code>#0B0A09</code>, text <code>#F3EDE4</code>, accent{" "}
-                <code>#C4A484</code>, healthy-sync indicator <code>#86AB9D</code>, attention state{" "}
-                <code>#D9A95C</code>. Nothing brighter than the film.
+                <strong>Palette</strong> — background <code>#1F1F21</code>, secondary <code>#18191A</code>, text{" "}
+                <code>#CECFD2</code>, accent <code>#1868DB</code>, healthy-sync <code>#4BCE97</code>, attention{" "}
+                <code>#FBC828</code>. Flat fills only — no gradients.
               </>,
               <>
-                <strong>Motion</strong> — 200 ms fades for controls, 400 ms for rail expansion, no bounce, no
-                parallax. Every animation respects <code>prefers-reduced-motion</code>.
+                <strong>Motion</strong> — 160–240 ms fades for controls, 420 ms for sheets and reveals, no bounce,
+                no parallax. Every animation respects <code>prefers-reduced-motion</code>.
               </>,
               <>
-                <strong>Typography</strong> — an expressive serif for titles and a humanist sans for interface
-                text, so the product reads like a cinema and not like a dashboard.
+                <strong>Typography</strong> — one soft product sans for titles and interface text, sized to Loom
+                Lens body and heading steps so the product reads clear rather than decorative.
               </>,
               <>
                 <strong>Mobile</strong> — the same room in portrait: stage on top, status line beneath, control
