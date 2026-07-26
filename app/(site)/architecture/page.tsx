@@ -74,7 +74,7 @@ const services = [
 const pipeline = [
   ["1. Accept", "tus resumable upload to /uploads; client-side SHA-256 sent as a trailer and re-verified server-side."],
   ["2. Probe", "ffprobe -v error -show_format -show_streams. Reject anything without a decodable video stream, longer than the configured limit, or with a mismatched checksum."],
-  ["3. Ladder", "Three rungs — 1080p at 5.0 Mbit/s, 720p at 2.8 Mbit/s, 480p at 1.2 Mbit/s — H.264 high profile, AAC-LC stereo at 128 kbit/s, forced keyframes every 2 seconds so rungs are switchable at identical boundaries."],
+  ["3. Ladder", "Three rungs — 1080p at 2.0 Mbit/s, 720p at 1.5 Mbit/s, 480p at 1.0 Mbit/s — H.264 high profile, AAC-LC stereo, forced keyframes every 2 seconds so rungs are switchable at identical boundaries. Each client’s ABR can downswitch on a slow link without breaking sync."],
   ["4. Package", "fMP4 HLS with an independent init segment per rung, a master playlist, and byte-aligned segment durations. DASH manifests can be emitted from the same segments later without re-encoding."],
   ["5. Subtitles", "Embedded tracks extracted per stream index and converted to WebVTT; uploaded SRT files are normalised the same way. Encoding is forced to UTF-8 and cue timings are validated."],
   ["6. Visuals", "Poster frame from the 10 percent mark, plus a sprite sheet of 160×90 tiles every 5 seconds with a matching WebVTT thumbnail index for scrub previews."],
@@ -153,9 +153,9 @@ export default function ArchitecturePage() {
     [v1]scale=w=1920:h=1080[v1out]; \\
     [v2]scale=w=1280:h=720[v2out]; \\
     [v3]scale=w=854:h=480[v3out]" \\
-  -map "[v1out]" -c:v:0 libx264 -preset veryfast -crf 21 -maxrate 5000k -bufsize 7500k \\
-  -map "[v2out]" -c:v:1 libx264 -preset veryfast -crf 22 -maxrate 2800k -bufsize 4200k \\
-  -map "[v3out]" -c:v:2 libx264 -preset veryfast -crf 23 -maxrate 1200k -bufsize 1800k \\
+  -map "[v1out]" -c:v:0 libx264 -preset veryfast -b:v 2000k -maxrate 2000k -bufsize 4000k \\
+  -map "[v2out]" -c:v:1 libx264 -preset veryfast -b:v 1500k -maxrate 1500k -bufsize 3000k \\
+  -map "[v3out]" -c:v:2 libx264 -preset veryfast -b:v 1000k -maxrate 1000k -bufsize 2000k \\
   -map a:0 -map a:0 -map a:0 -c:a aac -b:a 128k -ac 2 \\
   -x264-params "keyint=48:min-keyint=48:scenecut=0" \\
   -f hls -hls_time 2 -hls_playlist_type vod \\

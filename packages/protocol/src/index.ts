@@ -67,13 +67,21 @@ export function thresholdsFor(strictness: SyncStrictness): SyncThresholds {
   return { lockMs: 40, fineMs: 200, coarseMs: 800, hardSeekMs: 1000 };
 }
 
-/** ABR ladder targets (source-aware; never upscale). */
+/**
+ * ABR ladder targets (source-aware; never upscale).
+ * Video bitrate cap 2 Mbit/s at 1080p; floor 1 Mbit/s at 480p.
+ * Slow clients downswitch independently; sync stays on the shared timeline.
+ */
 export const ABR_LADDER = [
-  { height: 360, videoBitrateKbps: 700, audioBitrateKbps: 96, label: "360p" },
-  { height: 540, videoBitrateKbps: 1400, audioBitrateKbps: 128, label: "540p" },
-  { height: 720, videoBitrateKbps: 2800, audioBitrateKbps: 128, label: "720p" },
-  { height: 1080, videoBitrateKbps: 5500, audioBitrateKbps: 160, label: "1080p" },
+  { height: 480, videoBitrateKbps: 1000, audioBitrateKbps: 96, label: "480p" },
+  { height: 720, videoBitrateKbps: 1500, audioBitrateKbps: 128, label: "720p" },
+  { height: 1080, videoBitrateKbps: 2000, audioBitrateKbps: 128, label: "1080p" },
 ] as const;
+
+/** Top-rung video bitrate ceiling (bits/sec). */
+export const ABR_MAX_BITRATE_BPS = 2_000_000;
+/** Bottom-rung video bitrate floor (bits/sec). */
+export const ABR_MIN_BITRATE_BPS = 1_000_000;
 
 export const SEGMENT_DURATION_SEC = 2;
 

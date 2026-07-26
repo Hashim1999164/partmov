@@ -58,8 +58,19 @@ test("ABR ladder never upscales conceptually", () => {
   const rungs = ABR_LADDER.filter((r) => r.height <= sourceHeight);
   assert.deepEqual(
     rungs.map((r) => r.height),
-    [360, 540, 720],
+    [480, 720],
   );
+});
+
+test("ABR ladder stays within 1–2 Mbps video budget", async () => {
+  const { ABR_LADDER: ladder, ABR_MAX_BITRATE_BPS, ABR_MIN_BITRATE_BPS } = await import(
+    "@partmov/protocol"
+  );
+  const videos = ladder.map((r) => r.videoBitrateKbps * 1000);
+  assert.equal(Math.max(...videos), ABR_MAX_BITRATE_BPS);
+  assert.equal(Math.min(...videos), ABR_MIN_BITRATE_BPS);
+  assert.equal(ladder[0]?.height, 480);
+  assert.equal(ladder[ladder.length - 1]?.height, 1080);
 });
 
 test("control mode host_only blocks guest seek", () => {
