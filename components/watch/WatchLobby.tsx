@@ -135,28 +135,52 @@ export function WatchLobby() {
     setStarting(true);
     setPrepPct(0);
     try {
-      await readFileWithProgress(videoFile, setPrepPct);
-      if (subtitleFile) {
-        setPrepPct(96);
-        await readFileWithProgress(subtitleFile, (p) => setPrepPct(96 + Math.round(p * 0.04)));
-      }
       const code = createRoomCode();
       const who = name.trim() || "Host";
+      const { r2Status, uploadFileToR2 } = await import("@/lib/r2-client");
+      const status = await r2Status();
+      if (!status.enabled) {
+        throw new Error(
+          "Cloud storage is not ready. Films upload to R2 first, then stream — check R2 env on the server.",
+        );
+      }
+
+      const uploaded = await uploadFileToR2(videoFile, code, (p) => {
+        setPrepPct(p.pct);
+      });
+
+      if (subtitleFile) {
+        setPrepPct(98);
+        await readFileWithProgress(subtitleFile, () => undefined);
+      }
+
       persistIdentity(who, color);
       clearRoomEnded(code);
       sessionStorage.setItem(`partmov:name:${code}`, who);
       sessionStorage.setItem(`partmov:role:${code}`, "host");
       sessionStorage.setItem(`partmov:color:${code}`, color);
-      sessionStorage.setItem(`partmov:media:${code}`, "file");
-      await stashPendingMedia(code, {
-        video: videoFile,
-        subtitle: subtitleFile ?? undefined,
-        title: videoFile.name.replace(/\.[^.]+$/, "") || "Local film",
-      });
+      sessionStorage.setItem(`partmov:media:${code}`, "r2");
+      sessionStorage.setItem(`partmov:r2Key:${code}`, uploaded.objectKey);
+      sessionStorage.setItem(`partmov:r2Asset:${code}`, uploaded.assetId);
+      sessionStorage.setItem(
+        `partmov:r2Title:${code}`,
+        videoFile.name.replace(/\.[^.]+$/, "") || "Local film",
+      );
+
+      if (subtitleFile) {
+        await stashPendingMedia(code, {
+          video: videoFile,
+          subtitle: subtitleFile,
+          title: videoFile.name.replace(/\.[^.]+$/, "") || "Local film",
+        });
+        // Subtitles still ride local stash; video streams from R2.
+        sessionStorage.setItem(`partmov:subsPending:${code}`, "1");
+      }
+
       setPrepPct(100);
       router.push(`/watch/${code}`);
     } catch (err) {
-      setPrepError(err instanceof Error ? err.message : "Could not prepare the video");
+      setPrepError(err instanceof Error ? err.message : "Could not upload the video to cloud storage");
       setStarting(false);
       setPrepPct(null);
     }
@@ -198,8 +222,8 @@ export function WatchLobby() {
         <span className="eyebrow">Try it live</span>
         <h1>Open a private cinema for two</h1>
         <p className="lede">
-          Upload a film from your device, invite your partner, and keep the remote. The file stays on your devices —
-          nothing is stored on Partmov for this demo path.
+          Upload a film from your device — it goes to R2 cloud storage first, then both of you stream it. Invite
+          your partner and keep the remote.
         </p>
       </header>
 
@@ -285,7 +309,7 @@ export function WatchLobby() {
                     </span>
                     <strong>{importing === "video" ? "Reading video…" : "Drop a video here"}</strong>
                     <span>or click to browse your files</span>
-                    <span className="upload-drop__hint">Stays on your devices · peer-to-peer transfer</span>
+                    <span className="upload-drop__hint">Uploads to R2 cloud storage · then streams in the room</span>
                   </label>
                 ) : (
                   <div className="upload-file">
@@ -501,12 +525,14 @@ export function WatchLobby() {
               disabled={!canStart}
             >
               {starting
-                ? "Opening room…"
+                ? prepPct != null
+                  ? `Uploading to cloud… ${prepPct}%`
+                  : "Opening room…"
                 : importing
                   ? "Reading file…"
                   : sourceMode === "browse"
                     ? "Start co-browse room"
-                    : "Start private room"}
+                    : "Upload & start room"}
             </button>
           </div>
 
@@ -530,8 +556,8 @@ export function WatchLobby() {
           </form>
 
           <p className="watch-lobby__note">
-            Tip: open two tabs to demo sync. When you change the film later, everyone waits until the new file
-            finishes transferring — then the old one is wiped.
+            Tip: open two tabs to demo sync. Films upload to R2 first; both of you stream the same cloud object.
+            Ending the session frees that room’s R2 objects.
           </p>
         </div>
       </div>

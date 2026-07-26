@@ -127,8 +127,9 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
       role={role}
       name={name}
       color={color}
-      initialMediaId={mediaId && mediaId !== "file" && mediaId !== "browse" ? mediaId : null}
+      initialMediaId={mediaId && mediaId !== "file" && mediaId !== "browse" && mediaId !== "r2" ? mediaId : null}
       expectPendingFile={mediaId === "file"}
+      expectR2Film={mediaId === "r2"}
       initialBrowseUrl={browseUrl}
       passphraseGate={gate}
       serverRoomId={roomId}

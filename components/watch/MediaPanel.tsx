@@ -10,6 +10,7 @@ type Transfer = {
   pct: number;
   direction: "send" | "receive";
   phase?: string;
+  via?: "r2" | "peer";
 } | null;
 
 type Props = {
@@ -80,8 +81,8 @@ export function MediaPanel({
     <div className="rail-panel">
       <h3>Media</h3>
       <p className="rail-panel__muted">
-        Now playing: {currentTitle ?? "—"}. Changing the film notifies your partner, transfers the new file, then wipes
-        the previous one on every device.
+        Now playing: {currentTitle ?? "—"}. Changing the film uploads the new file to cloud storage, then both of you
+        stream it — the previous room objects are wiped when the session ends.
       </p>
 
       <div
@@ -155,7 +156,9 @@ export function MediaPanel({
           <span>
             {transfer.phase === "waiting_peer"
               ? `Waiting for partner to finish receiving ${transfer.fileName}…`
-              : `${transfer.direction === "send" ? "Sending" : "Receiving"} ${transfer.fileName}… ${transfer.pct}%`}
+              : transfer.via === "r2"
+                ? `${transfer.direction === "send" ? "Uploading to cloud" : "Streaming"} ${transfer.fileName}… ${transfer.pct}%`
+                : `${transfer.direction === "send" ? "Sending" : "Receiving"} ${transfer.fileName}… ${transfer.pct}%`}
           </span>
           <div className="transfer-bar__track">
             <i style={{ width: `${transfer.pct}%` }} />

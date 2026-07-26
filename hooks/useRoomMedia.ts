@@ -22,12 +22,16 @@ export type TransferProgress = {
   bytesLoaded?: number;
   bytesTotal?: number;
   startedAt?: number;
+  /** Where bytes are going — cloud (R2) vs peer-to-peer */
+  via?: "r2" | "peer";
 } | null;
 
 type UseRoomMediaArgs = {
   initial?: MediaDescriptor | null;
   /** When false, never fall back to a catalog template. */
   allowCatalogDefault?: boolean;
+  /** Room code — required for R2 object keys and signed playback. */
+  code?: string;
   send: (msg: SyncMessage) => void;
   /** Live partner presence — read on each transfer tick. */
   getPartnerConnected?: () => boolean;
@@ -46,6 +50,7 @@ type HeldVideo = {
 export function useRoomMedia({
   initial = null,
   allowCatalogDefault = false,
+  code = "",
   send,
   getPartnerConnected,
   onVideoUrl,
@@ -163,6 +168,52 @@ export function useRoomMedia({
     [onChanging, onVideoUrl, revokeAllExcept],
   );
 
+  const applyR2Film = useCallback(
+    async (desc: MediaDescriptor, opts?: { broadcast?: boolean }) => {
+      if (!code || !desc.objectKey) {
+        setMediaError("Missing cloud film reference");
+        return;
+      }
+      const { fetchR2PlaybackUrl } = await import("@/lib/r2-client");
+      setChangingTitle(desc.title);
+      onChanging?.(desc.title);
+      setTransfer({
+        transferId: desc.assetId || "r2",
+        fileName: desc.title,
+        kind: "video",
+        pct: 0,
+        direction: "receive",
+        phase: "streaming",
+        via: "r2",
+        startedAt: Date.now(),
+      });
+      try {
+        const signed = await fetchR2PlaybackUrl(code, desc.objectKey);
+        const next: MediaDescriptor = {
+          ...desc,
+          kind: "r2",
+          src: undefined,
+        };
+        revokeAllExcept(null);
+        heldVideoRef.current = null;
+        activeBlobRef.current = null;
+        applyDescriptor(next, signed.url);
+        setTransfer(null);
+        if (opts?.broadcast) {
+          send({
+            type: "media_set",
+            media: { ...next, src: undefined },
+            seq: Date.now(),
+          });
+        }
+      } catch (err) {
+        setTransfer(null);
+        setMediaError(err instanceof Error ? err.message : "Could not stream from cloud storage");
+      }
+    },
+    [applyDescriptor, code, onChanging, revokeAllExcept, send],
+  );
+
   const commitPendingReplace = useCallback(() => {
     const pending = pendingReplaceRef.current;
     if (!pending) return;
@@ -253,159 +304,68 @@ export function useRoomMedia({
         setMediaError("Choose a video file (.mp4, .webm, …)");
         return;
       }
+      if (!code) {
+        setMediaError("Missing room code for cloud upload");
+        return;
+      }
 
-      let durable = file;
-      const readStarted = Date.now();
-      try {
-        setTransfer({
-          transferId: "read",
-          fileName: file.name,
-          kind: "video",
-          pct: 0,
-          direction: "send",
-          phase: "reading",
-          bytesTotal: file.size,
-          bytesLoaded: 0,
-          startedAt: readStarted,
-        });
-        durable = await materializeFile(file, (pct) => {
-          setTransfer({
-            transferId: "read",
-            fileName: file.name,
-            kind: "video",
-            pct,
-            direction: "send",
-            phase: "reading",
-            bytesTotal: file.size,
-            bytesLoaded: Math.round((pct / 100) * file.size),
-            startedAt: readStarted,
-          });
-        });
-      } catch (err) {
-        setTransfer(null);
+      const { r2Status, uploadFileToR2 } = await import("@/lib/r2-client");
+      const status = await r2Status();
+      if (!status.enabled) {
         setMediaError(
-          err instanceof Error
-            ? err.message
-            : "Could not read this video. Try copying it to Downloads and pick it again.",
+          "Cloud storage (R2) is not configured. Films must upload to R2 before streaming — P2P transfer is disabled for multi‑GB files.",
         );
         return;
       }
 
-      const replace = Boolean(opts?.replace ?? Boolean(media || videoSrc));
-      const transferId = makeTransferId();
-      const localUrl = URL.createObjectURL(durable);
-      trackBlob(localUrl);
-      const desc: MediaDescriptor = {
-        kind: "file",
-        title: durable.name.replace(/\.[^.]+$/, "") || "Local film",
-      };
+      const title = file.name.replace(/\.[^.]+$/, "") || "Local film";
       const sendStarted = Date.now();
+      const transferId = makeTransferId();
 
-      if (replace) {
-        // Host plays the new film immediately while the partner receives bytes.
-        send({ type: "media_changing", title: desc.title, seq: Date.now() });
-        pendingReplaceRef.current = {
-          transferId,
-          file: durable,
-          blobUrl: localUrl,
-          desc,
-          peerReady: !getPartnerConnectedRef.current?.(),
+      if (opts?.replace || media || videoSrc) {
+        send({ type: "media_changing", title, seq: Date.now() });
+        setChangingTitle(title);
+        onChanging?.(title);
+      }
+
+      try {
+        const uploaded = await uploadFileToR2(file, code, (p) => {
+          setTransfer({
+            transferId,
+            fileName: file.name,
+            kind: "video",
+            pct: p.pct,
+            direction: "send",
+            phase: p.phase === "finalizing" ? "finalizing" : "sending",
+            bytesLoaded: p.bytesLoaded,
+            bytesTotal: p.bytesTotal,
+            startedAt: sendStarted,
+            via: "r2",
+          });
+        });
+
+        const desc: MediaDescriptor = {
+          kind: "r2",
+          title,
+          assetId: uploaded.assetId,
+          objectKey: uploaded.objectKey,
         };
-        applyDescriptor(desc, localUrl);
-      } else {
-        activeBlobRef.current = localUrl;
-        heldVideoRef.current = { file: durable, transferId, desc, blobUrl: localUrl };
-        applyDescriptor(desc, localUrl);
-      }
 
-      ackCountRef.current.set(transferId, 0);
-      send({
-        type: "file_offer",
-        transferId,
-        fileName: durable.name,
-        mime: durable.type || "video/mp4",
-        size: durable.size,
-        kind: "video",
-      });
-      setTransfer({
-        transferId,
-        fileName: durable.name,
-        kind: "video",
-        pct: 0,
-        direction: "send",
-        phase: "sending",
-        bytesTotal: durable.size,
-        bytesLoaded: 0,
-        startedAt: sendStarted,
-      });
-
-      const { chunks, total } = await encodeFileChunks(durable);
-      for (let i = 0; i < chunks.length; i++) {
-        send({
-          type: "file_chunk",
-          transferId,
-          index: i,
-          total,
-          data: chunks[i],
-        });
-        const acked = ackCountRef.current.get(transferId) ?? 0;
-        const sentPct = Math.round(((i + 1) / total) * 100);
-        const linked = Boolean(getPartnerConnectedRef.current?.());
-        const ackPct = linked ? Math.round((acked / total) * 100) : sentPct;
-        const pct = Math.min(sentPct, Math.max(ackPct, Math.round(sentPct * 0.85)));
-        setTransfer({
-          transferId,
-          fileName: durable.name,
-          kind: "video",
-          pct,
-          direction: "send",
-          phase: "sending",
-          bytesTotal: durable.size,
-          bytesLoaded: Math.round((pct / 100) * durable.size),
-          startedAt: sendStarted,
-        });
-        await new Promise((r) => setTimeout(r, linked ? 8 : 0));
-      }
-      send({ type: "file_done", transferId });
-
-      if (!getPartnerConnectedRef.current?.()) {
-        if (replace) commitPendingReplace();
-        else {
-          send({ type: "media_set", media: { ...desc, src: undefined }, seq: Date.now() });
-          setTransfer(null);
+        await applyR2Film(desc, { broadcast: true });
+        try {
+          sessionStorage.setItem(`partmov:media:${code}`, "r2");
+          sessionStorage.setItem(`partmov:r2Key:${code}`, uploaded.objectKey);
+          sessionStorage.setItem(`partmov:r2Asset:${code}`, uploaded.assetId);
+          sessionStorage.setItem(`partmov:r2Title:${code}`, title);
+        } catch {
+          /* ignore */
         }
-        return;
-      }
-
-      setTransfer({
-        transferId,
-        fileName: durable.name,
-        kind: "video",
-        pct: 99,
-        direction: "send",
-        phase: "waiting_peer",
-        bytesTotal: durable.size,
-        bytesLoaded: durable.size,
-        startedAt: sendStarted,
-      });
-
-      // Wait for guest file_ready (or timeout → commit anyway so host is not stuck).
-      const started = Date.now();
-      while (Date.now() - started < 45_000) {
-        const pending = pendingReplaceRef.current;
-        if (!replace) break;
-        if (pending && pending.transferId === transferId && pending.peerReady) break;
-        if (!getPartnerConnectedRef.current?.()) break;
-        await new Promise((r) => setTimeout(r, 120));
-      }
-
-      if (replace) commitPendingReplace();
-      else {
-        send({ type: "media_set", media: { ...desc, src: undefined }, seq: Date.now() });
+      } catch (err) {
         setTransfer(null);
+        setMediaError(err instanceof Error ? err.message : "Cloud upload failed");
       }
     },
-    [applyDescriptor, commitPendingReplace, media, onChanging, send, trackBlob, videoSrc],
+    [applyR2Film, code, media, onChanging, send, videoSrc],
   );
 
   const reofferHeldVideo = useCallback(() => {
@@ -671,6 +631,10 @@ export function useRoomMedia({
 
   const onMediaFromPeer = useCallback(
     (next: MediaDescriptor) => {
+      if (next.kind === "r2" && next.objectKey) {
+        void applyR2Film(next, { broadcast: false });
+        return;
+      }
       if (next.kind === "file" && !next.src) {
         setMedia(next);
         setChangingTitle(null);
@@ -683,7 +647,7 @@ export function useRoomMedia({
       }
       applyDescriptor(next);
     },
-    [applyDescriptor, onChanging, setCatalogFilm],
+    [applyDescriptor, applyR2Film, onChanging, setCatalogFilm],
   );
 
   const onMediaChanging = useCallback(
@@ -704,11 +668,15 @@ export function useRoomMedia({
 
   const currentMediaForWelcome = useCallback((): MediaDescriptor | null => {
     if (!media) return null;
-    if (media.kind === "file") return { ...media, src: undefined };
+    if (media.kind === "file" || media.kind === "r2") return { ...media, src: undefined };
     return media;
   }, [media]);
 
   const onVideoError = useCallback(() => {
+    if (media?.kind === "r2" && media.objectKey && code) {
+      void applyR2Film(media, { broadcast: false });
+      return;
+    }
     if (!media || media.kind !== "catalog" || !media.id) {
       setMediaError("Could not load this film");
       return;
@@ -720,7 +688,16 @@ export function useRoomMedia({
       return;
     }
     setMediaError("Could not load this film");
-  }, [media, videoSrc]);
+  }, [applyR2Film, code, media, videoSrc]);
+
+  // Refresh signed R2 URLs before they expire (~2h).
+  useEffect(() => {
+    if (media?.kind !== "r2" || !media.objectKey || !code) return;
+    const id = window.setInterval(() => {
+      void applyR2Film(media, { broadcast: false });
+    }, 90 * 60 * 1000);
+    return () => window.clearInterval(id);
+  }, [applyR2Film, code, media]);
 
   const wipeSession = useCallback(() => {
     revokeAllExcept(null);
@@ -762,6 +739,7 @@ export function useRoomMedia({
     onMediaClear,
     onVideoError,
     applyDescriptor,
+    applyR2Film,
     wipeSession,
     reofferHeldVideo,
     currentMediaForWelcome,

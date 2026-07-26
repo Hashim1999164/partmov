@@ -6,7 +6,7 @@ export type SyncStrictness = "relaxed" | "normal" | "strict";
 
 export type PartnerState = "waiting" | "connecting" | "connected" | "reconnecting" | "left";
 
-export type MediaKind = "catalog" | "url" | "file" | "hls" | "browse";
+export type MediaKind = "catalog" | "url" | "file" | "hls" | "browse" | "r2";
 
 export type MediaDescriptor = {
   kind: MediaKind;
@@ -16,8 +16,10 @@ export type MediaDescriptor = {
   poster?: string;
   credit?: string;
   license?: string;
-  /** Streaming V2 — never distribute raw movie URLs in production */
+  /** Streaming V2 / R2 — never distribute long-lived raw movie URLs */
   assetId?: string;
+  /** R2 object key under rooms/{code}/… — clients refresh signed playback URLs */
+  objectKey?: string;
   masterPlaylistUrl?: string;
   playbackSessionId?: string;
   durationMs?: number;

@@ -43,6 +43,8 @@ type Props = {
   initialMediaId?: string | null;
   /** Host started from lobby with a stashed local file. */
   expectPendingFile?: boolean;
+  /** Host started from lobby after uploading the film to R2. */
+  expectR2Film?: boolean;
   /** Host started a co-browse room with this URL. */
   initialBrowseUrl?: string | null;
   passphraseGate?: string;
@@ -69,6 +71,7 @@ export function WatchRoom({
   color,
   initialMediaId,
   expectPendingFile = false,
+  expectR2Film = false,
   initialBrowseUrl = null,
   passphraseGate,
   serverRoomId,
@@ -147,13 +150,21 @@ export function WatchRoom({
   const media = useRoomMedia({
     initial: initialMedia,
     allowCatalogDefault: false,
+    code,
     getPartnerConnected: () => partnerConnectedRef.current,
     send: (msg) => syncSendRef.current(msg),
     onSubtitleReceived: (label, url) => subsAddRef.current(label, url),
     onChanging: setChangingTitle,
   });
 
-  reofferRef.current = () => media.reofferHeldVideo();
+  reofferRef.current = () => {
+    const current = media.currentMediaForWelcome();
+    if (current?.kind === "r2" && current.objectKey) {
+      syncSendRef.current({ type: "media_set", media: { ...current, src: undefined }, seq: Date.now() });
+      return;
+    }
+    media.reofferHeldVideo();
+  };
   mediaWelcomeRef.current = () => media.currentMediaForWelcome();
 
   const useHls =
@@ -214,6 +225,9 @@ export function WatchRoom({
   const finishSession = useCallback(
     (_reason: RoomEndReason, message: string) => {
       wipeAllRef.current();
+      if (isHost) {
+        void import("@/lib/r2-client").then(({ purgeRoomR2 }) => purgeRoomR2(code));
+      }
       markRoomEnded(code, message);
       const v = videoRef.current;
       if (v) {
@@ -224,7 +238,7 @@ export function WatchRoom({
       setEndedMessage(message);
       setEnded(true);
     },
-    [code],
+    [code, isHost],
   );
 
   const sync = useRoomSync({
@@ -274,11 +288,48 @@ export function WatchRoom({
   };
 
   useEffect(() => {
+    if (!isHost || !expectR2Film) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const objectKey = sessionStorage.getItem(`partmov:r2Key:${code}`);
+        const assetId = sessionStorage.getItem(`partmov:r2Asset:${code}`) || undefined;
+        const title =
+          sessionStorage.getItem(`partmov:r2Title:${code}`) ||
+          "Shared film";
+        if (!objectKey || cancelled) return;
+        await media.applyR2Film(
+          { kind: "r2", title, assetId, objectKey },
+          { broadcast: true },
+        );
+        if (sessionStorage.getItem(`partmov:subsPending:${code}`) === "1") {
+          const pending = await getPendingMedia(code);
+          if (pending?.subtitle && !cancelled) {
+            await media.sendSubtitleFile(pending.subtitle);
+            const { fileToSubtitleVtt } = await import("@/lib/media-transfer");
+            const { label, url } = await fileToSubtitleVtt(pending.subtitle);
+            if (!cancelled) subs.addTrackFromUrl(label, url);
+            await clearPendingMedia(code);
+          }
+          sessionStorage.removeItem(`partmov:subsPending:${code}`);
+        }
+      } catch {
+        /* applyR2Film sets mediaError */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, expectR2Film, isHost]);
+
+  useEffect(() => {
     if (!isHost || !expectPendingFile) return;
     let cancelled = false;
     void (async () => {
       const pending = await getPendingMedia(code);
       if (cancelled || !pending) return;
+      // Prefer cloud upload — never P2P-encode multi-GB files in the room.
       await media.sendLocalFile(pending.video, { replace: false });
       if (cancelled) return;
       if (pending.subtitle) {
@@ -835,7 +886,7 @@ export function WatchRoom({
 
       <p className="cinema-status" role="status">
         {media.transfer
-          ? `${media.transfer.direction === "send" ? "Sending" : "Receiving"} “${media.transfer.fileName}” · ${media.transfer.pct}%`
+          ? `${media.transfer.via === "r2" ? (media.transfer.direction === "send" ? "Uploading to cloud" : "Streaming from cloud") : media.transfer.direction === "send" ? "Sending" : "Receiving"} “${media.transfer.fileName}” · ${media.transfer.pct}%`
           : changingTitle || media.changingTitle
             ? `Changing film to “${changingTitle || media.changingTitle}”…`
             : (sync.error ?? sync.status)}

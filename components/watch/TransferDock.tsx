@@ -20,13 +20,14 @@ function formatEta(sec: number | null) {
 
 function phaseLabel(t: TransferProgress) {
   if (!t) return "";
+  const cloud = t.via === "r2";
   if (t.phase === "reading") return "Reading";
-  if (t.phase === "sending") return "Uploading to partner";
+  if (t.phase === "sending") return cloud ? "Uploading to cloud" : "Uploading to partner";
   if (t.phase === "waiting_peer") return "Waiting for partner";
-  if (t.phase === "receiving") return "Downloading";
-  if (t.phase === "finalizing") return "Finalizing";
-  if (t.phase === "streaming") return "Streaming ahead";
-  return t.direction === "send" ? "Sending" : "Receiving";
+  if (t.phase === "receiving") return cloud ? "Preparing stream" : "Downloading";
+  if (t.phase === "finalizing") return cloud ? "Finalizing cloud upload" : "Finalizing";
+  if (t.phase === "streaming") return cloud ? "Streaming from cloud" : "Streaming ahead";
+  return t.direction === "send" ? "Uploading" : "Receiving";
 }
 
 type Props = {
