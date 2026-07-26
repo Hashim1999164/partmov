@@ -106,9 +106,11 @@ export function StreamingWatchRoom({ code, roomId, name, color, inviteToken }: P
       <div className="cinema-boot">
         <h1>Session ended</h1>
         <p>{ended.message}</p>
-        <button type="button" className="btn btn--primary" onClick={() => router.push("/watch")}>
-          Back to lobby
-        </button>
+        <div className="cinema-boot__actions">
+          <a className="btn btn--primary" href="/watch">
+            Back to lobby
+          </a>
+        </div>
       </div>
     );
   }

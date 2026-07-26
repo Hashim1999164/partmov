@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { browseTitleFromUrl, normalizeBrowseUrl } from "@/lib/browse";
 import { getCatalogFilm } from "@/lib/catalog";
 import {
   DEFAULT_SETTINGS,
@@ -16,6 +17,7 @@ import { useRoomSync } from "@/hooks/useRoomSync";
 import { useRoomMedia } from "@/hooks/useRoomMedia";
 import { useSubtitles } from "@/hooks/useSubtitles";
 import { CinemaStage } from "./CinemaStage";
+import { VirtualBrowser } from "./VirtualBrowser";
 import { ControlStrip } from "./ControlStrip";
 import { SubtitleMenu } from "./SubtitleMenu";
 import { MediaPanel } from "./MediaPanel";
@@ -26,7 +28,7 @@ import { InviteSheet } from "./InviteSheet";
 import { useAdaptivePlayer } from "@/hooks/useAdaptivePlayer";
 import { fetchPlaybackUrl, refreshPlaybackUrl, streamingV2Enabled } from "@/lib/streaming";
 import { clearPendingMedia, getPendingMedia } from "@/lib/pending-media";
-import { markRoomEnded } from "@/lib/session-storage";
+import { clearRoomEnded, markRoomEnded } from "@/lib/session-storage";
 
 type RailTab = "chat" | "people" | "media" | "settings";
 
@@ -38,6 +40,8 @@ type Props = {
   initialMediaId?: string | null;
   /** Host started from lobby with a stashed local file. */
   expectPendingFile?: boolean;
+  /** Host started a co-browse room with this URL. */
+  initialBrowseUrl?: string | null;
   passphraseGate?: string;
   /** Streaming V2 server room UUID */
   serverRoomId?: string;
@@ -62,6 +66,7 @@ export function WatchRoom({
   color,
   initialMediaId,
   expectPendingFile = false,
+  initialBrowseUrl = null,
   passphraseGate,
   serverRoomId,
   inviteToken,
@@ -285,6 +290,14 @@ export function WatchRoom({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, expectPendingFile, isHost]);
 
+  useEffect(() => {
+    if (!isHost || !initialBrowseUrl) return;
+    const url = normalizeBrowseUrl(initialBrowseUrl);
+    if (!url) return;
+    media.setBrowseSite(url, browseTitleFromUrl(url), false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, initialBrowseUrl, isHost]);
+
   // Wire media broadcast helpers to sync seq
   const pickCatalog = useCallback(
     (id: string) => {
@@ -503,15 +516,41 @@ export function WatchRoom({
       <div className="cinema-boot">
         <h1>Session ended</h1>
         <p>{endedMessage}</p>
-        <button type="button" className="btn btn--primary" onClick={() => router.push("/watch")}>
-          Back to lobby
-        </button>
+        <div className="cinema-boot__actions">
+          <a
+            className="btn btn--primary"
+            href="/watch"
+            onClick={() => {
+              clearRoomEnded(code);
+            }}
+          >
+            Back to lobby
+          </a>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => {
+              clearRoomEnded(code);
+              window.location.assign(`/watch/${encodeURIComponent(code)}`);
+            }}
+          >
+            Try this room again
+          </button>
+        </div>
       </div>
     );
   }
 
   const title =
     settings.roomTitle || media.media?.title || "Private cinema";
+  const isBrowse = media.media?.kind === "browse" && Boolean(media.media.src);
+  const browseUrlLive = isBrowse ? media.media!.src! : "";
+
+  function navigateBrowse(raw: string) {
+    const url = normalizeBrowseUrl(raw);
+    if (!url) return;
+    media.setBrowseSite(url, browseTitleFromUrl(url), true);
+  }
 
   return (
     <div
@@ -556,51 +595,61 @@ export function WatchRoom({
 
       <div className="cinema-body">
         <div className="cinema-main" ref={stageRef}>
-          <CinemaStage
-            videoRef={videoRef}
-            src={useHls ? undefined : media.videoSrc || undefined}
-            hlsManaged={useHls}
-            poster={media.poster}
-            tracks={subs.tracks}
-            activeTrackId={subs.activeId}
-            subtitleVisible={subs.visible}
-            subtitleStyle={subs.style}
-            countdown={sync.countdown}
-            buffering={buffering || (useHls && !adaptive.ready)}
-            waitingPartner={sync.partnerState !== "connected" && isHost}
-            partnerName={sync.partnerName}
-            waitingMedia={!media.hasPlayableMedia && !useHls}
-            changingTitle={changingTitle || media.changingTitle}
-            transferLabel={
-              media.transfer
-                ? `${media.transfer.direction === "send" ? "Sending" : "Receiving"} ${media.transfer.fileName} · ${media.transfer.pct}%`
-                : null
-            }
-            reactions={sync.reactions}
-            onTimeUpdate={() => {
-              const v = videoRef.current;
-              if (!v || sync.applyingRef.current) {
-                if (v) sync.setPosition(v.currentTime);
-                updateBuffered();
-                return;
+          {isBrowse ? (
+            <VirtualBrowser
+              url={browseUrlLive}
+              canNavigate={isHost || sync.controlMode !== "host_only"}
+              partnerName={sync.partnerName}
+              onNavigate={navigateBrowse}
+            />
+          ) : (
+            <CinemaStage
+              videoRef={videoRef}
+              src={useHls ? undefined : media.videoSrc || undefined}
+              hlsManaged={useHls}
+              poster={media.poster}
+              tracks={subs.tracks}
+              activeTrackId={subs.activeId}
+              subtitleVisible={subs.visible}
+              subtitleStyle={subs.style}
+              countdown={sync.countdown}
+              buffering={buffering || (useHls && !adaptive.ready)}
+              waitingPartner={sync.partnerState !== "connected" && isHost}
+              partnerName={sync.partnerName}
+              waitingMedia={!media.hasPlayableMedia && !useHls}
+              changingTitle={changingTitle || media.changingTitle}
+              transferLabel={
+                media.transfer
+                  ? `${media.transfer.direction === "send" ? "Sending" : "Receiving"} ${media.transfer.fileName} · ${media.transfer.pct}%`
+                  : null
               }
-              sync.setPosition(v.currentTime);
-              updateBuffered();
-            }}
-            onLoadedMetadata={() => {
-              const v = videoRef.current;
-              if (v) sync.setDuration(v.duration || 0);
-              updateBuffered();
-            }}
-            onPlay={() => {
-              if (!sync.applyingRef.current) sync.setPlayState("playing");
-            }}
-            onPause={() => {
-              if (!sync.applyingRef.current) sync.setPlayState("paused");
-            }}
-            onError={media.onVideoError}
-            onClickStage={togglePlay}
-          />
+              reactions={sync.reactions}
+              onTimeUpdate={() => {
+                const v = videoRef.current;
+                if (!v || sync.applyingRef.current) {
+                  if (v) sync.setPosition(v.currentTime);
+                  updateBuffered();
+                  return;
+                }
+                sync.setPosition(v.currentTime);
+                updateBuffered();
+              }}
+              onLoadedMetadata={() => {
+                const v = videoRef.current;
+                if (v) sync.setDuration(v.duration || 0);
+                updateBuffered();
+              }}
+              onPlay={() => {
+                if (!sync.applyingRef.current) sync.setPlayState("playing");
+              }}
+              onPause={() => {
+                if (!sync.applyingRef.current) sync.setPlayState("paused");
+              }}
+              onError={media.onVideoError}
+              onClickStage={togglePlay}
+            />
+          )}
+          {!isBrowse && (
           <ControlStrip
             playing={sync.playState === "playing"}
             position={sync.position}
@@ -661,6 +710,7 @@ export function WatchRoom({
             qualityValue={useHls ? (adaptive.autoLevel ? "auto" : adaptive.currentLevel) : "auto"}
             onQuality={useHls ? adaptive.setQuality : undefined}
           />
+          )}
         </div>
 
         <aside className={`cinema-rail${railTab ? " is-open" : ""}`}>
@@ -718,6 +768,14 @@ export function WatchRoom({
               onPickCatalog={pickCatalog}
               onPasteUrl={pasteUrl}
               onLocalFile={(file) => void media.sendLocalFile(file, { replace: true })}
+              onBrowseUrl={(raw, label) => {
+                const next = normalizeBrowseUrl(raw);
+                if (!next) {
+                  return false;
+                }
+                media.setBrowseSite(next, label || browseTitleFromUrl(next), true);
+                return true;
+              }}
             />
           )}
           {railTab === "settings" && (

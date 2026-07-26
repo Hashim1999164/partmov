@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { normalizeRoomCode } from "@/lib/catalog";
 import { COLOR_CHIPS, type Role } from "@/lib/sync-protocol";
-import { readRoomEnded } from "@/lib/session-storage";
+import { clearRoomEnded, readRoomEnded } from "@/lib/session-storage";
 import { WatchRoom } from "./WatchRoom";
 import { StreamingWatchRoom } from "./StreamingWatchRoom";
 import { streamingV2Enabled } from "@/lib/streaming";
@@ -23,6 +23,7 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
   const [name, setName] = useState("You");
   const [color, setColor] = useState<string>(COLOR_CHIPS[0]);
   const [mediaId, setMediaId] = useState<string | null>(null);
+  const [browseUrl, setBrowseUrl] = useState<string | null>(null);
 
   useEffect(() => {
     const closed = readRoomEnded(code);
@@ -39,6 +40,7 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
       localStorage.getItem("partmov:pref:color") ||
       COLOR_CHIPS[0];
     const storedMedia = sessionStorage.getItem(`partmov:media:${code}`);
+    const storedBrowse = sessionStorage.getItem(`partmov:browseUrl:${code}`);
     // Only lobby "Start" stamps host into sessionStorage. Cold invite links default to guest
     // so a second tab/device does not fight the PeerJS host room id.
     const nextRole: Role = !asGuest && storedRole === "host" ? "host" : "guest";
@@ -53,6 +55,7 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
     setName(nextName);
     setColor(storedColor);
     setMediaId(nextRole === "host" && storedMedia ? storedMedia : null);
+    setBrowseUrl(nextRole === "host" && storedMedia === "browse" ? storedBrowse : null);
     setEnded(null);
     setReady(true);
   }, [asGuest, code]);
@@ -79,10 +82,29 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
   if (ended) {
     return (
       <div className="cinema-boot">
+        <h1>Session ended</h1>
         <p>{ended.message || "This session has ended."}</p>
-        <a className="btn btn--primary" href="/watch">
-          Start a new room
-        </a>
+        <div className="cinema-boot__actions">
+          <a
+            className="btn btn--primary"
+            href="/watch"
+            onClick={() => {
+              clearRoomEnded(code);
+            }}
+          >
+            Back to lobby
+          </a>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => {
+              clearRoomEnded(code);
+              window.location.assign(`/watch/${encodeURIComponent(code)}`);
+            }}
+          >
+            Try this room again
+          </button>
+        </div>
       </div>
     );
   }
@@ -105,8 +127,9 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
       role={role}
       name={name}
       color={color}
-      initialMediaId={mediaId && mediaId !== "file" ? mediaId : null}
+      initialMediaId={mediaId && mediaId !== "file" && mediaId !== "browse" ? mediaId : null}
       expectPendingFile={mediaId === "file"}
+      initialBrowseUrl={browseUrl}
       passphraseGate={gate}
       serverRoomId={roomId}
       inviteToken={inviteToken}

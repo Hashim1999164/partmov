@@ -6,7 +6,7 @@ export type SyncStrictness = "relaxed" | "normal" | "strict";
 
 export type PartnerState = "waiting" | "connecting" | "connected" | "reconnecting" | "left";
 
-export type MediaKind = "catalog" | "url" | "file" | "hls";
+export type MediaKind = "catalog" | "url" | "file" | "hls" | "browse";
 
 export type MediaDescriptor = {
   kind: MediaKind;

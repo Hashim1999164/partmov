@@ -3,6 +3,8 @@
  * Uses an in-memory handoff for same-tab navigation, plus IndexedDB for refresh resilience.
  */
 
+import { materializeFile, readBlobBytes } from "@/lib/read-blob";
+
 const DB_NAME = "partmov-pending-media";
 const STORE = "files";
 const MEM = new Map<string, PendingMedia>();
@@ -12,6 +14,8 @@ export type PendingMedia = {
   subtitle?: File;
   title: string;
 };
+
+export { materializeFile, readBlobBytes };
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -109,23 +113,10 @@ export async function clearPendingMedia(code: string): Promise<void> {
   }
 }
 
-/** Read file with progress (0–100) for lobby UX before room create. */
+/** Read file with progress (0–100); falls back if FileReader hits NotReadableError. */
 export async function readFileWithProgress(
   file: File,
   onProgress: (pct: number) => void,
 ): Promise<ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onprogress = (e) => {
-      if (e.lengthComputable && e.total > 0) {
-        onProgress(Math.min(99, Math.round((e.loaded / e.total) * 100)));
-      }
-    };
-    reader.onload = () => {
-      onProgress(100);
-      resolve(reader.result as ArrayBuffer);
-    };
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-    reader.readAsArrayBuffer(file);
-  });
+  return readBlobBytes(file, onProgress);
 }

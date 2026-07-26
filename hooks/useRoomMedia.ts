@@ -7,6 +7,7 @@ import {
   encodeFileChunks,
   makeTransferId,
 } from "@/lib/media-transfer";
+import { materializeFile } from "@/lib/read-blob";
 import type { MediaDescriptor, SyncMessage } from "@/lib/sync-protocol";
 
 export type TransferProgress = {
@@ -122,6 +123,17 @@ export function useRoomMedia({
       setMediaError(null);
       setChangingTitle(null);
       onChanging?.(null);
+
+      if (next.kind === "browse") {
+        revokeAllExcept(null);
+        heldVideoRef.current = null;
+        activeBlobRef.current = null;
+        setPoster(undefined);
+        setVideoSrc("");
+        onVideoUrl?.("", next);
+        return;
+      }
+
       let src = srcOverride ?? next.src ?? "";
       if (next.kind === "hls") {
         src = next.masterPlaylistUrl ?? src;
@@ -141,7 +153,7 @@ export function useRoomMedia({
       setVideoSrc(src);
       onVideoUrl?.(src, next);
     },
-    [onChanging, onVideoUrl],
+    [onChanging, onVideoUrl, revokeAllExcept],
   );
 
   const commitPendingReplace = useCallback(() => {
@@ -210,6 +222,24 @@ export function useRoomMedia({
     [applyDescriptor, revokeAllExcept, send],
   );
 
+  const setBrowseSite = useCallback(
+    (url: string, title: string, broadcast: boolean) => {
+      const desc: MediaDescriptor = {
+        kind: "browse",
+        title: title.trim() || "Website",
+        src: url,
+      };
+      revokeAllExcept(null);
+      heldVideoRef.current = null;
+      applyDescriptor(desc);
+      if (broadcast) {
+        send({ type: "media_set", media: desc, seq: Date.now() });
+      }
+      return true;
+    },
+    [applyDescriptor, revokeAllExcept, send],
+  );
+
   const sendLocalFile = useCallback(
     async (file: File, opts?: { replace?: boolean }) => {
       if (!file.type.startsWith("video/") && !/\.(mp4|webm|ogg|mov)$/i.test(file.name)) {
@@ -217,13 +247,43 @@ export function useRoomMedia({
         return;
       }
 
+      let durable = file;
+      try {
+        setTransfer({
+          transferId: "read",
+          fileName: file.name,
+          kind: "video",
+          pct: 0,
+          direction: "send",
+          phase: "reading",
+        });
+        durable = await materializeFile(file, (pct) => {
+          setTransfer({
+            transferId: "read",
+            fileName: file.name,
+            kind: "video",
+            pct,
+            direction: "send",
+            phase: "reading",
+          });
+        });
+      } catch (err) {
+        setTransfer(null);
+        setMediaError(
+          err instanceof Error
+            ? err.message
+            : "Could not read this video. Try copying it to Downloads and pick it again.",
+        );
+        return;
+      }
+
       const replace = Boolean(opts?.replace ?? Boolean(media || videoSrc));
       const transferId = makeTransferId();
-      const localUrl = URL.createObjectURL(file);
+      const localUrl = URL.createObjectURL(durable);
       trackBlob(localUrl);
       const desc: MediaDescriptor = {
         kind: "file",
-        title: file.name.replace(/\.[^.]+$/, "") || "Local film",
+        title: durable.name.replace(/\.[^.]+$/, "") || "Local film",
       };
 
       if (replace) {
@@ -232,14 +292,14 @@ export function useRoomMedia({
         send({ type: "media_changing", title: desc.title, seq: Date.now() });
         pendingReplaceRef.current = {
           transferId,
-          file,
+          file: durable,
           blobUrl: localUrl,
           desc,
           peerReady: !getPartnerConnectedRef.current?.(),
         };
       } else {
         activeBlobRef.current = localUrl;
-        heldVideoRef.current = { file, transferId, desc, blobUrl: localUrl };
+        heldVideoRef.current = { file: durable, transferId, desc, blobUrl: localUrl };
         applyDescriptor(desc, localUrl);
       }
 
@@ -247,21 +307,21 @@ export function useRoomMedia({
       send({
         type: "file_offer",
         transferId,
-        fileName: file.name,
-        mime: file.type || "video/mp4",
-        size: file.size,
+        fileName: durable.name,
+        mime: durable.type || "video/mp4",
+        size: durable.size,
         kind: "video",
       });
       setTransfer({
         transferId,
-        fileName: file.name,
+        fileName: durable.name,
         kind: "video",
         pct: 0,
         direction: "send",
         phase: "reading",
       });
 
-      const { chunks, total } = await encodeFileChunks(file);
+      const { chunks, total } = await encodeFileChunks(durable);
       for (let i = 0; i < chunks.length; i++) {
         send({
           type: "file_chunk",
@@ -276,7 +336,7 @@ export function useRoomMedia({
         const ackPct = linked ? Math.round((acked / total) * 100) : sentPct;
         setTransfer({
           transferId,
-          fileName: file.name,
+          fileName: durable.name,
           kind: "video",
           pct: Math.min(sentPct, Math.max(ackPct, Math.round(sentPct * 0.85))),
           direction: "send",
@@ -298,7 +358,7 @@ export function useRoomMedia({
 
       setTransfer({
         transferId,
-        fileName: file.name,
+        fileName: durable.name,
         kind: "video",
         pct: 99,
         direction: "send",
@@ -369,30 +429,41 @@ export function useRoomMedia({
 
   const sendSubtitleFile = useCallback(
     async (file: File, label?: string) => {
+      let durable = file;
+      try {
+        durable = await materializeFile(file);
+      } catch (err) {
+        setMediaError(
+          err instanceof Error
+            ? err.message
+            : "Could not read those subtitles. Try another file.",
+        );
+        return;
+      }
       const transferId = makeTransferId();
       send({
         type: "file_offer",
         transferId,
-        fileName: file.name,
-        mime: file.type || "text/vtt",
-        size: file.size,
+        fileName: durable.name,
+        mime: durable.type || "text/vtt",
+        size: durable.size,
         kind: "subtitle",
-        label: label || file.name,
+        label: label || durable.name,
       });
       setTransfer({
         transferId,
-        fileName: file.name,
+        fileName: durable.name,
         kind: "subtitle",
         pct: 0,
         direction: "send",
         phase: "sending",
       });
-      const { chunks, total } = await encodeFileChunks(file);
+      const { chunks, total } = await encodeFileChunks(durable);
       for (let i = 0; i < chunks.length; i++) {
         send({ type: "file_chunk", transferId, index: i, total, data: chunks[i] });
         setTransfer({
           transferId,
-          fileName: file.name,
+          fileName: durable.name,
           kind: "subtitle",
           pct: Math.round(((i + 1) / total) * 100),
           direction: "send",
@@ -603,6 +674,7 @@ export function useRoomMedia({
     changingTitle,
     setCatalogFilm,
     setUrlFilm,
+    setBrowseSite,
     sendLocalFile,
     sendSubtitleFile,
     handleFileMessage,
@@ -614,6 +686,6 @@ export function useRoomMedia({
     wipeSession,
     reofferHeldVideo,
     currentMediaForWelcome,
-    hasPlayableMedia: Boolean(videoSrc),
+    hasPlayableMedia: Boolean(videoSrc) || media?.kind === "browse",
   };
 }

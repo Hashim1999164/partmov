@@ -1,3 +1,5 @@
+import { readBlobBytes, readBlobText } from "@/lib/read-blob";
+
 /** Convert basic SRT cue blocks into WebVTT text. */
 export function srtToVtt(srt: string): string {
   const normalized = srt.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
@@ -8,7 +10,7 @@ export function srtToVtt(srt: string): string {
 }
 
 export async function fileToSubtitleVtt(file: File): Promise<{ label: string; vtt: string; url: string }> {
-  const text = await file.text();
+  const text = await readBlobText(file);
   const isSrt = /\.srt$/i.test(file.name) || text.includes("-->") && text.includes(",");
   const vtt = isSrt && !text.trimStart().startsWith("WEBVTT") ? srtToVtt(text) : text.trimStart().startsWith("WEBVTT") ? text : `WEBVTT\n\n${text}`;
   const blob = new Blob([vtt], { type: "text/vtt" });
@@ -25,7 +27,7 @@ export type FileTransferHandlers = {
 
 /** Split an ArrayBuffer into base64 chunk messages for PeerJS. */
 export async function encodeFileChunks(file: File): Promise<{ total: number; chunks: string[] }> {
-  const buf = await file.arrayBuffer();
+  const buf = await readBlobBytes(file);
   const bytes = new Uint8Array(buf);
   let binary = "";
   const step = 0x8000;

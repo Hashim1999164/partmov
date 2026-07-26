@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { CATALOG } from "@/lib/catalog";
+import { materializeFile } from "@/lib/read-blob";
 
 type Transfer = {
   fileName: string;
@@ -20,6 +21,7 @@ type Props = {
   onPickCatalog: (id: string) => void;
   onPasteUrl: (url: string, title: string) => boolean;
   onLocalFile: (file: File) => void;
+  onBrowseUrl?: (url: string, title: string) => boolean;
 };
 
 export function MediaPanel({
@@ -31,9 +33,27 @@ export function MediaPanel({
   onPickCatalog,
   onPasteUrl,
   onLocalFile,
+  onBrowseUrl,
 }: Props) {
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
+  const [browseDraft, setBrowseDraft] = useState("https://www.netflix.com/");
+  const [reading, setReading] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  async function pickLocal(raw: File) {
+    setReadError(null);
+    setReading(true);
+    try {
+      const durable = await materializeFile(raw);
+      onLocalFile(durable);
+    } catch (err) {
+      setReadError(err instanceof Error ? err.message : "Could not read that video");
+    } finally {
+      setReading(false);
+    }
+  }
 
   if (!isHost) {
     return (
@@ -64,20 +84,71 @@ export function MediaPanel({
         the previous one on every device.
       </p>
 
-      <label className="btn btn--primary sheet__file">
-        {currentTitle ? "Replace with local file" : "Choose local file"}
-        <input
-          type="file"
-          accept="video/mp4,video/webm,video/ogg,.mp4,.webm"
-          hidden
-          disabled={Boolean(transfer)}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onLocalFile(f);
-            e.target.value = "";
+      <div
+        className={`upload-drop upload-drop--rail${dragOver ? " is-drag" : ""}${reading || transfer ? " is-busy" : ""}`}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          if (!transfer && !reading) setDragOver(true);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!transfer && !reading) setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          if (e.currentTarget === e.target) setDragOver(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer.files?.[0];
+          if (f && !transfer && !reading) void pickLocal(f);
+        }}
+      >
+        <label className="upload-drop__empty upload-drop__empty--rail">
+          <strong>{reading ? "Reading file…" : currentTitle ? "Replace film" : "Choose a film"}</strong>
+          <span>Drop a video here or browse</span>
+          <input
+            type="file"
+            accept="video/mp4,video/webm,video/ogg,.mp4,.webm"
+            hidden
+            disabled={Boolean(transfer) || reading}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = "";
+              if (f) void pickLocal(f);
+            }}
+          />
+        </label>
+      </div>
+
+      <details className="media-advanced">
+        <summary>Open a website instead</summary>
+        <form
+          className="stack stack--sm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (onBrowseUrl?.(browseDraft.trim(), "Website")) {
+              setBrowseDraft("https://www.netflix.com/");
+            }
           }}
-        />
-      </label>
+        >
+          <label className="watch-field">
+            <span>Website URL</span>
+            <input
+              value={browseDraft}
+              onChange={(e) => setBrowseDraft(e.target.value)}
+              placeholder="https://www.netflix.com/"
+              spellCheck={false}
+            />
+          </label>
+          <button type="submit" className="btn btn--ghost" disabled={!browseDraft.trim() || Boolean(transfer)}>
+            Co-browse this site
+          </button>
+        </form>
+      </details>
+
+      {readError && <p className="rail-panel__error">{readError}</p>}
 
       {transfer && (
         <div className="transfer-bar">
