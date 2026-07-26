@@ -927,7 +927,9 @@ export function WatchRoom({
       </div>
 
       <p className="cinema-status" role="status">
-        {media.transfer
+        {windowed.error
+          ? windowed.error
+          : media.transfer
           ? `${media.transfer.via === "r2" ? (media.transfer.direction === "send" ? "Uploading to cloud" : "Streaming from cloud") : media.transfer.direction === "send" ? "Sending" : "Receiving"} “${media.transfer.fileName}” · ${media.transfer.pct}%`
           : changingTitle || media.changingTitle
             ? `Changing film to “${changingTitle || media.changingTitle}”…`
