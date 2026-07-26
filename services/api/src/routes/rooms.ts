@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from "@partmov/protocol";
 import { query } from "../db/pool.js";
 import { env } from "../lib/env.js";
 import { randomToken, roomCode, sha256, signPlaybackToken } from "../lib/crypto.js";
+import { assertStorageAllows, storageLimitErrorBody } from "../lib/storage-quota.js";
 import { requireUser } from "./auth.js";
 
 export async function roomRoutes(app: FastifyInstance) {
@@ -18,6 +19,11 @@ export async function roomRoutes(app: FastifyInstance) {
         passphrase: z.string().max(64).optional(),
       })
       .parse(req.body);
+
+    const storage = await assertStorageAllows(0);
+    if (!storage.allowed) {
+      return reply.code(507).send(storageLimitErrorBody(storage));
+    }
 
     const asset = await query<{ id: string; title: string; status: string; master_playlist_key: string | null }>(
       `SELECT id, title, status, master_playlist_key FROM assets WHERE id = $1 AND owner_id = $2`,
@@ -101,6 +107,11 @@ export async function roomRoutes(app: FastifyInstance) {
       if (!inv.rows[0]) return reply.code(403).send({ error: "forbidden", message: "Invalid invite" });
     }
 
+    const storage = await assertStorageAllows(0);
+    if (!storage.allowed) {
+      return reply.code(507).send(storageLimitErrorBody(storage));
+    }
+
     const pathPrefix = `assets/${room.rows[0].asset_id}/v${room.rows[0].published_version}/`;
     const exp = Math.floor(Date.now() / 1000) + 15 * 60;
     const sid = randomToken(16);
@@ -180,6 +191,11 @@ export async function roomRoutes(app: FastifyInstance) {
     }
     if (!user && !body.inviteToken) {
       return reply.code(401).send({ error: "unauthorized", message: "Auth or invite required" });
+    }
+
+    const storage = await assertStorageAllows(0);
+    if (!storage.allowed) {
+      return reply.code(507).send(storageLimitErrorBody(storage));
     }
 
     // Revoke previous sessions for this participant/room to rotate.

@@ -20,6 +20,10 @@ const envSchema = z.object({
   SESSION_HMAC_SECRET: z.string().default("dev-session-hmac-change-me"),
   PUBLIC_APP_URL: z.string().default("http://127.0.0.1:3000"),
   ENCODER_VERSION: z.string().default("partmov-ffmpeg-v1"),
+  /** Hard cap for object storage (R2 free tier = 10 GiB). */
+  STORAGE_LIMIT_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024 * 1024),
+  /** Refuse new sessions when remaining capacity is at or below this cushion. */
+  STORAGE_GUARD_BYTES: z.coerce.number().int().nonnegative().default(256 * 1024 * 1024),
 });
 
 export type Env = z.infer<typeof envSchema>;

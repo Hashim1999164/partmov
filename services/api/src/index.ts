@@ -12,6 +12,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { roomRoutes } from "./routes/rooms.js";
 import { mediaRoutes } from "./routes/media.js";
 import { startRetentionScheduler } from "./lib/retention.js";
+import { measureObjectStorageUsage } from "./lib/storage-quota.js";
 
 async function main() {
   const app = Fastify({
@@ -52,6 +53,25 @@ async function main() {
     } catch (err) {
       reply.code(503);
       return { ok: false, error: String(err) };
+    }
+  });
+
+  app.get("/api/storage-quota", async (_req, reply) => {
+    try {
+      const usage = await measureObjectStorageUsage();
+      const nearLimit = usage.remainingBytes <= usage.guardBytes;
+      return {
+        usedBytes: usage.usedBytes,
+        limitBytes: usage.limitBytes,
+        remainingBytes: usage.remainingBytes,
+        guardBytes: usage.guardBytes,
+        nearLimit,
+        sessionsAllowed: !nearLimit,
+        buckets: usage.buckets,
+      };
+    } catch (err) {
+      reply.code(503);
+      return { error: "storage_unavailable", message: String(err) };
     }
   });
 

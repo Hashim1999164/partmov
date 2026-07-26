@@ -3,6 +3,12 @@ import { z } from "zod";
 import { query } from "../db/pool.js";
 import { env } from "../lib/env.js";
 import { originalKey, putObject } from "../lib/minio.js";
+import {
+  assertStorageAllows,
+  estimatedUploadFootprint,
+  invalidateStorageUsageCache,
+  storageLimitErrorBody,
+} from "../lib/storage-quota.js";
 import { requireUser } from "./auth.js";
 
 export async function assetRoutes(app: FastifyInstance) {
@@ -39,6 +45,11 @@ export async function assetRoutes(app: FastifyInstance) {
         title: z.string().min(1).max(200).optional(),
       })
       .parse(req.body);
+
+    const storage = await assertStorageAllows(estimatedUploadFootprint(body.sizeBytes));
+    if (!storage.allowed) {
+      return reply.code(507).send(storageLimitErrorBody(storage));
+    }
 
     const title = body.title ?? body.filename.replace(/\.[^.]+$/, "");
     const asset = await query<{ id: string }>(
@@ -78,12 +89,19 @@ export async function assetRoutes(app: FastifyInstance) {
     if (!session) return reply.code(404).send({ error: "not_found", message: "Upload session missing" });
     if (session.completed_at) return reply.code(409).send({ error: "completed", message: "Already uploaded" });
 
+    const declared = Number(session.size_bytes) || 0;
+    const storage = await assertStorageAllows(estimatedUploadFootprint(declared || 1));
+    if (!storage.allowed) {
+      return reply.code(507).send(storageLimitErrorBody(storage));
+    }
+
     const chunks: Buffer[] = [];
     for await (const chunk of req.raw) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
     const body = Buffer.concat(chunks);
     await putObject(env.MINIO_BUCKET_ORIGINALS, session.object_key, body, session.mime);
+    invalidateStorageUsageCache();
     await query(
       `UPDATE upload_sessions SET bytes_received = $2, completed_at = now() WHERE id = $1`,
       [uploadId, body.length],

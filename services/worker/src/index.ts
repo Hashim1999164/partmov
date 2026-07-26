@@ -31,6 +31,8 @@ const MINIO_ACCESS_KEY = process.env.MINIO_ACCESS_KEY ?? "partmov";
 const MINIO_SECRET_KEY = process.env.MINIO_SECRET_KEY ?? "partmovsecret";
 const BUCKET_ORIGINALS = process.env.MINIO_BUCKET_ORIGINALS ?? "originals";
 const BUCKET_RENDITIONS = process.env.MINIO_BUCKET_RENDITIONS ?? "renditions";
+const STORAGE_LIMIT_BYTES = Number(process.env.STORAGE_LIMIT_BYTES ?? 10 * 1024 * 1024 * 1024);
+const STORAGE_GUARD_BYTES = Number(process.env.STORAGE_GUARD_BYTES ?? 256 * 1024 * 1024);
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL, max: 4 });
 const s3 = new S3Client({
@@ -607,13 +609,40 @@ async function handlePurge(job: JobRow) {
   ]);
 }
 
+async function sumBucketBytes(bucket: string): Promise<number> {
+  let total = 0;
+  let token: string | undefined;
+  do {
+    const listed = await s3.send(
+      new ListObjectsV2Command({ Bucket: bucket, ContinuationToken: token }),
+    );
+    for (const obj of listed.Contents ?? []) total += obj.Size ?? 0;
+    token = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (token);
+  return total;
+}
+
+/** Refuse writes that would push past the R2 free-tier cushion. */
+async function assertStorageHeadroom(extraBytes = 0) {
+  const used =
+    (await sumBucketBytes(BUCKET_ORIGINALS)) + (await sumBucketBytes(BUCKET_RENDITIONS));
+  const remaining = Math.max(0, STORAGE_LIMIT_BYTES - used);
+  if (used + extraBytes > STORAGE_LIMIT_BYTES || remaining <= STORAGE_GUARD_BYTES) {
+    throw new Error(
+      `storage_limit: object storage near/over free-tier cap (${used}/${STORAGE_LIMIT_BYTES} bytes)`,
+    );
+  }
+}
+
 async function processJob(job: JobRow) {
   activeJobs += 1;
   try {
     await markRunning(job.id);
     if (job.kind === "probe") await handleProbe(job);
-    else if (job.kind === "transcode") await handleTranscode(job);
-    else if (job.kind === "purge") await handlePurge(job);
+    else if (job.kind === "transcode") {
+      await assertStorageHeadroom();
+      await handleTranscode(job);
+    } else if (job.kind === "purge") await handlePurge(job);
     else {
       // poster/sprites/subtitles are folded into transcode for v1
       await markSuccess(job.id);

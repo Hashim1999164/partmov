@@ -1,6 +1,7 @@
 import { query } from "../db/pool.js";
 import { env } from "../lib/env.js";
 import { deleteObject } from "../lib/minio.js";
+import { invalidateStorageUsageCache } from "../lib/storage-quota.js";
 
 /** Lifecycle: abandon stale uploads; enqueue purge for marked assets. */
 export async function runRetentionSweep() {
@@ -15,9 +16,11 @@ export async function runRetentionSweep() {
      WHERE abandoned_at IS NOT NULL AND completed_at IS NULL
        AND abandoned_at > now() - interval '7 days'`,
   );
+  let deleted = false;
   for (const row of abandoned.rows) {
     try {
       await deleteObject(env.MINIO_BUCKET_ORIGINALS, row.object_key);
+      deleted = true;
     } catch {
       /* missing is fine */
     }
@@ -28,6 +31,7 @@ export async function runRetentionSweep() {
       [row.asset_id, `purge-abandon:${row.asset_id}`],
     );
   }
+  if (deleted) invalidateStorageUsageCache();
 
   // Expire rooms → revoke playback
   await query(
