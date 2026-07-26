@@ -1,6 +1,6 @@
-/** Browser upload to Cloudflare R2 via Partmov API (+ direct signed parts for large films). */
+/** Browser upload to Cloudflare R2 via Partmov API (same-origin proxy — no bucket CORS required). */
 
-import { R2_MULTIPART_PART_SIZE } from "@/lib/r2-constants";
+import { R2_MULTIPART_PART_SIZE, R2_PROXY_PUT_MAX } from "@/lib/r2-constants";
 
 export type R2UploadProgress = {
   pct: number;
@@ -16,10 +16,10 @@ export type R2UploadResult = {
   contentType: string;
 };
 
-/** @deprecated use R2_MULTIPART_PART_SIZE — kept for older imports */
+/** @deprecated use R2_MULTIPART_PART_SIZE */
 export const R2_PART_SIZE = R2_MULTIPART_PART_SIZE;
 
-const PARALLEL = 3;
+const PARALLEL_PARTS = 2;
 
 async function apiJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -32,19 +32,22 @@ async function apiJson<T>(path: string, body: unknown): Promise<T> {
   return data;
 }
 
-export async function r2Status(): Promise<{ enabled: boolean }> {
+export async function r2Status(): Promise<{ enabled: boolean; cors?: boolean }> {
   try {
     const res = await fetch("/api/r2/status", { cache: "no-store" });
     if (!res.ok) return { enabled: false };
-    return (await res.json()) as { enabled: boolean };
+    return (await res.json()) as { enabled: boolean; cors?: boolean };
   } catch {
     return { enabled: false };
   }
 }
 
-function normalizeEtag(raw: string | null): string {
-  if (!raw) return "";
-  return raw.replaceAll('"', "").trim();
+function friendlyFetchError(err: unknown, fallback: string) {
+  const msg = err instanceof Error ? err.message : String(err || "");
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    return "Upload could not reach the cloud (network). Check your connection and try again.";
+  }
+  return msg || fallback;
 }
 
 export async function uploadFileToR2(
@@ -70,39 +73,44 @@ export async function uploadFileToR2(
 
   if (init.mode === "put") {
     onProgress?.({ pct: 5, bytesLoaded: 0, bytesTotal: file.size, phase: "uploading" });
-    const qs = new URLSearchParams({
-      objectKey: init.objectKey,
-      contentType: init.contentType || file.type || "video/mp4",
-    });
-    const res = await fetch(`/api/r2/upload/put?${qs}`, {
-      method: "PUT",
-      body: file,
-      headers: { "Content-Type": "application/octet-stream" },
-    });
-    const data = (await res.json().catch(() => ({}))) as {
-      size?: number;
-      contentType?: string;
-      error?: string;
-    };
-    if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
-    onProgress?.({
-      pct: 100,
-      bytesLoaded: file.size,
-      bytesTotal: file.size,
-      phase: "finalizing",
-    });
-    return {
-      assetId: init.assetId,
-      objectKey: init.objectKey,
-      size: data.size || file.size,
-      contentType: data.contentType || file.type || "video/mp4",
-    };
+    try {
+      const qs = new URLSearchParams({
+        objectKey: init.objectKey,
+        contentType: init.contentType || file.type || "video/mp4",
+      });
+      const res = await fetch(`/api/r2/upload/put?${qs}`, {
+        method: "PUT",
+        body: file,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        size?: number;
+        contentType?: string;
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+      onProgress?.({
+        pct: 100,
+        bytesLoaded: file.size,
+        bytesTotal: file.size,
+        phase: "finalizing",
+      });
+      return {
+        assetId: init.assetId,
+        objectKey: init.objectKey,
+        size: data.size || file.size,
+        contentType: data.contentType || file.type || "video/mp4",
+      };
+    } catch (err) {
+      throw new Error(friendlyFetchError(err, "Cloud upload failed"));
+    }
   }
 
   if (!init.uploadId) throw new Error("Missing multipart upload id");
 
-  // Never go below R2’s 5 MiB non-final part minimum.
+  // ≥5 MiB parts via two (or more) same-origin staging chunks — no browser→R2 CORS.
   const partSize = Math.max(5 * 1024 * 1024, init.partSize || R2_MULTIPART_PART_SIZE);
+  const chunkSize = R2_PROXY_PUT_MAX;
   const totalParts = Math.max(1, Math.ceil(file.size / partSize));
   const completed = new Map<number, string>();
   let uploaded = 0;
@@ -117,60 +125,60 @@ export async function uploadFileToR2(
     });
   };
 
-  async function signBatch(partNumbers: number[]) {
-    const { urls } = await apiJson<{
-      urls: Array<{ partNumber: number; url: string }>;
-    }>("/api/r2/upload/sign-parts", {
-      objectKey: init.objectKey,
-      uploadId: init.uploadId,
-      partNumbers,
-    });
-    return new Map(urls.map((u) => [u.partNumber, u.url]));
-  }
-
-  async function uploadOne(partNumber: number, url: string) {
+  async function uploadPart(partNumber: number) {
     const start = (partNumber - 1) * partSize;
     const end = Math.min(file.size, start + partSize);
-    const blob = file.slice(start, end);
-    const res = await fetch(url, {
-      method: "PUT",
-      body: blob,
-      headers: { "Content-Type": "application/octet-stream" },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(text || `Part ${partNumber} upload failed (${res.status})`);
+    const partBytes = end - start;
+    const chunkCount = Math.max(1, Math.ceil(partBytes / chunkSize));
+
+    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+      const cStart = start + chunkIndex * chunkSize;
+      const cEnd = Math.min(end, cStart + chunkSize);
+      const blob = file.slice(cStart, cEnd);
+      const qs = new URLSearchParams({
+        objectKey: init.objectKey,
+        uploadId: init.uploadId!,
+        partNumber: String(partNumber),
+        chunkIndex: String(chunkIndex),
+      });
+      const res = await fetch(`/api/r2/upload/stage?${qs}`, {
+        method: "PUT",
+        body: blob,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || `Staging chunk ${chunkIndex} failed (${res.status})`);
+      }
+      uploaded += blob.size;
+      report();
     }
-    const etag = normalizeEtag(res.headers.get("etag") || res.headers.get("ETag"));
-    if (!etag) throw new Error(`Part ${partNumber} missing ETag`);
-    completed.set(partNumber, etag);
-    uploaded += blob.size;
-    report();
+
+    const committed = await apiJson<{ etag: string }>("/api/r2/upload/commit-part", {
+      objectKey: init.objectKey,
+      uploadId: init.uploadId,
+      partNumber,
+      chunkCount,
+    });
+    completed.set(partNumber, committed.etag);
   }
 
   try {
     const allParts = Array.from({ length: totalParts }, (_, i) => i + 1);
-    for (let i = 0; i < allParts.length; i += 20) {
-      const batch = allParts.slice(i, i + 20);
-      const urlMap = await signBatch(batch);
-      let bi = 0;
-      const workers: Promise<void>[] = [];
-      for (let w = 0; w < PARALLEL; w++) {
-        workers.push(
-          (async () => {
-            while (true) {
-              const idx = bi++;
-              if (idx >= batch.length) return;
-              const n = batch[idx]!;
-              const url = urlMap.get(n);
-              if (!url) throw new Error(`Missing signed URL for part ${n}`);
-              await uploadOne(n, url);
-            }
-          })(),
-        );
-      }
-      await Promise.all(workers);
+    let cursor = 0;
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < PARALLEL_PARTS; w++) {
+      workers.push(
+        (async () => {
+          while (true) {
+            const idx = cursor++;
+            if (idx >= allParts.length) return;
+            await uploadPart(allParts[idx]!);
+          }
+        })(),
+      );
     }
+    await Promise.all(workers);
 
     onProgress?.({
       pct: 99,
@@ -211,7 +219,7 @@ export async function uploadFileToR2(
     } catch {
       /* ignore */
     }
-    throw err;
+    throw new Error(friendlyFetchError(err, "Cloud upload failed"));
   }
 }
 

@@ -849,7 +849,9 @@ export function WatchRoom({
                     ? "Upload was interrupted — reload clears in-progress uploads. Re-add the film from Media."
                     : uploadJob?.status === "error"
                       ? uploadJob.error || "Cloud upload failed"
-                      : null
+                      : windowed.error
+                        ? windowed.error
+                        : null
               }
               reactions={sync.reactions}
               onTimeUpdate={() => {
