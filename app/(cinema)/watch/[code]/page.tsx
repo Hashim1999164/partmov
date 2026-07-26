@@ -16,8 +16,8 @@ export default async function RoomPage({
   return (
     <Suspense
       fallback={
-        <div className="shell watch-lobby">
-          <p className="lede">Opening the room…</p>
+        <div className="cinema-boot">
+          <p>Opening the room…</p>
         </div>
       }
     >

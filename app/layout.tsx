@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import { Fraunces, Manrope, JetBrains_Mono } from "next/font/google";
-import { SiteNav } from "@/components/SiteNav";
-import { SiteFooter } from "@/components/SiteFooter";
 import "./globals.css";
 
 const display = Fraunces({
@@ -49,9 +47,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <noscript>
           <style>{`.reveal { opacity: 1 !important; transform: none !important; }`}</style>
         </noscript>
-        <SiteNav />
-        <main>{children}</main>
-        <SiteFooter />
+        {children}
       </body>
     </html>
   );

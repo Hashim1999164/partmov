@@ -1,547 +1,572 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DataConnection, Peer } from "peerjs";
-import { SAMPLE_FILM } from "@/lib/sample";
+import { useRouter } from "next/navigation";
+import { getCatalogFilm } from "@/lib/catalog";
 import {
-  channelName,
-  formatTime,
-  peerIdForHost,
+  DEFAULT_SETTINGS,
+  canControlPlayback,
+  initials,
+  type MediaDescriptor,
   type Role,
-  type SyncMessage,
+  type RoomSettings,
 } from "@/lib/sync-protocol";
+import { useRoomSync } from "@/hooks/useRoomSync";
+import { useRoomMedia } from "@/hooks/useRoomMedia";
+import { useSubtitles } from "@/hooks/useSubtitles";
+import { CinemaStage } from "./CinemaStage";
+import { ControlStrip } from "./ControlStrip";
+import { SubtitleMenu } from "./SubtitleMenu";
+import { MediaPanel } from "./MediaPanel";
+import { PeoplePanel } from "./PeoplePanel";
+import { ChatRail } from "./ChatRail";
+import { SettingsPanel } from "./SettingsPanel";
+import { InviteSheet } from "./InviteSheet";
 
-type ChatLine = { id: string; name: string; body: string; at: number };
-type ReactionBurst = { id: string; glyph: string; name: string };
-
-const REACTIONS = ["♥", "👏", "🔥", "😮", "😂", "✨"] as const;
-const LOCK_MS = 80;
-const NUDGE_MS = 400;
-const HARD_SEEK_MS = 1200;
+type RailTab = "chat" | "people" | "media" | "settings";
 
 type Props = {
   code: string;
   role: Role;
   name: string;
+  color: string;
+  initialMediaId?: string | null;
+  passphraseGate?: string;
 };
 
-export function WatchRoom({ code, role, name }: Props) {
+function loadSettings(): RoomSettings {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
+  try {
+    const raw = localStorage.getItem("partmov:settings");
+    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_SETTINGS;
+}
+
+export function WatchRoom({ code, role, name, color, initialMediaId, passphraseGate }: Props) {
+  const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const peerRef = useRef<Peer | null>(null);
-  const connRef = useRef<DataConnection | null>(null);
-  const channelRef = useRef<BroadcastChannel | null>(null);
-  const seqRef = useRef(0);
-  const applyingRef = useRef(false);
-  const lastLocalActionRef = useRef(0);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const idleTimer = useRef<number | null>(null);
 
-  const [partnerName, setPartnerName] = useState<string | null>(null);
-  const [partnerState, setPartnerState] = useState<"waiting" | "connected" | "reconnecting">("waiting");
-  const [playState, setPlayState] = useState<"paused" | "playing">("paused");
-  const [position, setPosition] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [driftMs, setDriftMs] = useState(0);
-  const [linkCopied, setLinkCopied] = useState(false);
-  const [railOpen, setRailOpen] = useState(false);
-  const [chatInput, setChatInput] = useState("");
-  const [chat, setChat] = useState<ChatLine[]>([]);
-  const [reactions, setReactions] = useState<ReactionBurst[]>([]);
-  const [status, setStatus] = useState("Opening the room…");
-  const [error, setError] = useState<string | null>(null);
-
-  const inviteUrl = useMemo(() => {
-    if (typeof window === "undefined") return "";
-    return `${window.location.origin}/watch/${code}?as=guest`;
-  }, [code]);
+  const [settings, setSettings] = useState<RoomSettings>(loadSettings);
+  const [railTab, setRailTab] = useState<RailTab | null>(null);
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [subsOpen, setSubsOpen] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
+  const [bufferedEnd, setBufferedEnd] = useState(0);
+  const [buffering, setBuffering] = useState(false);
+  const [ended, setEnded] = useState(false);
+  const [passphrase, setPassphrase] = useState("");
+  const [passOk, setPassOk] = useState(!passphraseGate);
+  const [roomPassphrase, setRoomPassphrase] = useState("");
 
   const isHost = role === "host";
 
-  const send = useCallback((msg: SyncMessage) => {
-    channelRef.current?.postMessage(msg);
-    const conn = connRef.current;
-    if (conn?.open) conn.send(msg);
-  }, []);
+  const inviteUrl = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    const base = `${window.location.origin}/watch/${code}?as=guest`;
+    return roomPassphrase ? `${base}&gate=${encodeURIComponent(roomPassphrase)}` : base;
+  }, [code, roomPassphrase]);
 
-  const pushChat = useCallback((line: Omit<ChatLine, "id">) => {
-    setChat((prev) => [...prev.slice(-40), { ...line, id: `${line.at}-${Math.random()}` }]);
-  }, []);
+  const initialMedia: MediaDescriptor | null = useMemo(() => {
+    if (initialMediaId) {
+      const film = getCatalogFilm(initialMediaId);
+      if (film) {
+        return {
+          kind: "catalog",
+          id: film.id,
+          title: film.title,
+          src: film.src,
+          poster: film.poster,
+          credit: film.credit,
+          license: film.license,
+        };
+      }
+    }
+    return null;
+  }, [initialMediaId]);
 
-  const burstReaction = useCallback((glyph: string, who: string) => {
-    const id = `${Date.now()}-${Math.random()}`;
-    setReactions((prev) => [...prev, { id, glyph, name: who }]);
-    window.setTimeout(() => {
-      setReactions((prev) => prev.filter((r) => r.id !== id));
-    }, 1600);
-  }, []);
+  const syncSendRef = useRef<(msg: import("@/lib/sync-protocol").SyncMessage) => void>(() => undefined);
+  const subsAddRef = useRef<(label: string, url: string) => void>(() => undefined);
 
-  const applyRemotePlayback = useCallback(
-    (msg: Extract<SyncMessage, { type: "playback" | "seek" | "heartbeat" }>) => {
-      const video = videoRef.current;
-      if (!video) return;
+  const subs = useSubtitles();
+  subsAddRef.current = subs.addTrackFromUrl;
 
-      const now = performance.now();
-      const travel = Math.max(0, (Date.now() - msg.at) / 1000);
-      const target =
-        msg.type === "heartbeat" || msg.state === "playing"
-          ? msg.position + (msg.state === "playing" ? travel : 0)
-          : msg.position;
+  const media = useRoomMedia({
+    initial: initialMedia,
+    send: (msg) => syncSendRef.current(msg),
+    onSubtitleReceived: (label, url) => subsAddRef.current(label, url),
+  });
 
-      const local = video.currentTime;
-      const drift = (local - target) * 1000;
-      setDriftMs(Math.round(drift));
-
-      applyingRef.current = true;
-
-      if (msg.type === "seek" || Math.abs(drift) > HARD_SEEK_MS) {
-        video.currentTime = Math.max(0, target);
-        video.playbackRate = 1;
-      } else if (Math.abs(drift) > NUDGE_MS) {
-        video.playbackRate = drift < 0 ? 1.04 : 0.96;
-      } else if (Math.abs(drift) > LOCK_MS) {
-        video.playbackRate = drift < 0 ? 1.02 : 0.98;
+  const sync = useRoomSync({
+    code,
+    role,
+    name,
+    color,
+    videoRef,
+    settings,
+    onSettingsFromPeer: (s) => setSettings(s),
+    onMediaFromPeer: (m) => media.onMediaFromPeer(m),
+    onFileMessage: (msg) => media.handleFileMessage(msg),
+    onSubtitleFromPeer: (trackId) => {
+      if (trackId === null) {
+        subs.setActiveId(null);
+        subs.setVisible(false);
       } else {
-        video.playbackRate = 1;
-      }
-
-      if (msg.state === "playing" && video.paused) {
-        void video.play().catch(() => undefined);
-        setPlayState("playing");
-      } else if (msg.state === "paused" && !video.paused) {
-        video.pause();
-        setPlayState("paused");
-      }
-
-      window.setTimeout(() => {
-        applyingRef.current = false;
-      }, 120);
-      void now;
-    },
-    [],
-  );
-
-  const onMessage = useCallback(
-    (msg: SyncMessage) => {
-      if (msg.type === "hello") {
-        setPartnerName(msg.name);
-        setPartnerState("connected");
-        setStatus(`${msg.name} joined the room`);
-        send({ type: "welcome", name });
-        if (isHost) {
-          const video = videoRef.current;
-          send({
-            type: "playback",
-            state: video && !video.paused ? "playing" : "paused",
-            position: video?.currentTime ?? 0,
-            at: Date.now(),
-            seq: ++seqRef.current,
-          });
-        }
-        return;
-      }
-      if (msg.type === "welcome") {
-        setPartnerName(msg.name);
-        setPartnerState("connected");
-        setStatus(`Connected with ${msg.name}`);
-        return;
-      }
-      if (msg.type === "partner_left") {
-        setPartnerState("waiting");
-        setStatus("Partner left — waiting to reconnect");
-        return;
-      }
-      if (msg.type === "playback" || msg.type === "seek" || msg.type === "heartbeat") {
-        if (isHost && msg.type === "heartbeat") return;
-        if (seqRef.current && "seq" in msg && msg.seq < seqRef.current - 2 && msg.type !== "heartbeat") {
-          return;
-        }
-        if ("seq" in msg) seqRef.current = Math.max(seqRef.current, msg.seq);
-        applyRemotePlayback(msg);
-        return;
-      }
-      if (msg.type === "chat") {
-        pushChat({ name: msg.name, body: msg.body, at: msg.at });
-        return;
-      }
-      if (msg.type === "reaction") {
-        burstReaction(msg.glyph, msg.name);
+        subs.setActiveId(trackId);
+        subs.setVisible(true);
       }
     },
-    [applyRemotePlayback, burstReaction, isHost, pushChat, send],
-  );
+    onRoomEnded: () => setEnded(true),
+  });
 
-  // BroadcastChannel — same browser / two tabs (reliable for local demos)
-  useEffect(() => {
-    const channel = new BroadcastChannel(channelName(code));
-    channelRef.current = channel;
-    channel.onmessage = (event: MessageEvent<SyncMessage>) => onMessage(event.data);
-    return () => {
-      channel.close();
-      channelRef.current = null;
-    };
-  }, [code, onMessage]);
+  syncSendRef.current = sync.send;
 
-  // PeerJS — cross-device partner over the internet
-  useEffect(() => {
-    let cancelled = false;
-
-    async function connect() {
-      try {
-        const { default: PeerCtor } = await import("peerjs");
-        if (cancelled) return;
-
-        const peer = isHost
-          ? new PeerCtor(peerIdForHost(code), { debug: 0 })
-          : new PeerCtor({ debug: 0 });
-        peerRef.current = peer;
-
-        peer.on("error", (err) => {
-          const message = String(err?.type ?? err?.message ?? err);
-          if (message.includes("unavailable-id") || message.includes("ID is taken")) {
-            setError("That room code is already live. Ask your partner for a fresh invite, or pick a new code.");
-            return;
-          }
-          // Peer broker flakiness is fine if BroadcastChannel is working in another tab.
-          setStatus((prev) =>
-            partnerState === "connected" ? prev : "Looking for your partner… (share the invite link)",
-          );
+  // Wire media broadcast helpers to sync seq
+  const pickCatalog = useCallback(
+    (id: string) => {
+      media.setCatalogFilm(id, false);
+      const film = getCatalogFilm(id);
+      if (film) {
+        sync.broadcastMedia({
+          kind: "catalog",
+          id: film.id,
+          title: film.title,
+          src: film.src,
+          poster: film.poster,
+          credit: film.credit,
+          license: film.license,
         });
-
-        peer.on("open", () => {
-          if (cancelled) return;
-          setStatus(isHost ? "Room ready — share the invite link" : "Connecting to host…");
-
-          if (!isHost) {
-            const conn = peer.connect(peerIdForHost(code), { reliable: true });
-            wireConn(conn);
-          }
-        });
-
-        if (isHost) {
-          peer.on("connection", (conn) => {
-            wireConn(conn);
-          });
-        }
-      } catch {
-        setStatus("Peer network unavailable — open a second tab on this device to demo sync");
       }
-    }
-
-    function wireConn(conn: DataConnection) {
-      connRef.current = conn;
-      conn.on("open", () => {
-        setPartnerState("connected");
-        send({ type: "hello", role, name });
-      });
-      conn.on("data", (data) => {
-        onMessage(data as SyncMessage);
-      });
-      conn.on("close", () => {
-        setPartnerState("reconnecting");
-        setStatus("Connection dropped — trying to recover");
-        send({ type: "partner_left" });
-      });
-    }
-
-    void connect();
-
-    // Announce on the local channel immediately so a second tab can find us
-    const t = window.setTimeout(() => {
-      send({ type: "hello", role, name });
-    }, 250);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t);
-      try {
-        send({ type: "partner_left" });
-      } catch {
-        /* ignore */
-      }
-      connRef.current?.close();
-      peerRef.current?.destroy();
-      connRef.current = null;
-      peerRef.current = null;
-    };
-    // intentionally mount-once per room identity
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, isHost, name, role]);
-
-  // Host heartbeats keep the guest locked
-  useEffect(() => {
-    if (!isHost) return;
-    const id = window.setInterval(() => {
-      const video = videoRef.current;
-      if (!video || partnerState !== "connected") return;
-      send({
-        type: "heartbeat",
-        position: video.currentTime,
-        state: video.paused ? "paused" : "playing",
-        at: Date.now(),
-        seq: seqRef.current,
-      });
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [isHost, partnerState, send]);
-
-  // Guest soft-rate release when locked
-  useEffect(() => {
-    if (isHost) return;
-    const id = window.setInterval(() => {
-      const video = videoRef.current;
-      if (!video) return;
-      if (Math.abs(driftMs) <= LOCK_MS && video.playbackRate !== 1) {
-        video.playbackRate = 1;
-      }
-    }, 500);
-    return () => window.clearInterval(id);
-  }, [driftMs, isHost]);
-
-  const broadcastPlayback = useCallback(
-    (state: "playing" | "paused", positionOverride?: number) => {
-      const video = videoRef.current;
-      if (!video) return;
-      const seq = ++seqRef.current;
-      lastLocalActionRef.current = Date.now();
-      send({
-        type: "playback",
-        state,
-        position: positionOverride ?? video.currentTime,
-        at: Date.now(),
-        seq,
-      });
     },
-    [send],
+    [media, sync],
   );
 
-  const togglePlay = useCallback(async () => {
+  const pasteUrl = useCallback(
+    (url: string, title: string) => {
+      const ok = media.setUrlFilm(url, title, false);
+      if (ok) {
+        sync.broadcastMedia({ kind: "url", title: title.trim() || "Pasted film", src: url });
+      }
+      return ok;
+    },
+    [media, sync],
+  );
+
+  const canPlay = canControlPlayback(role, sync.controlMode, sync.remoteHolder, "play");
+  const canSeek = canControlPlayback(role, sync.controlMode, sync.remoteHolder, "seek");
+  const canRate = canControlPlayback(role, sync.controlMode, sync.remoteHolder, "rate");
+  const canPause = canControlPlayback(role, sync.controlMode, sync.remoteHolder, "pause");
+
+  const bumpChrome = useCallback(() => {
+    setChromeVisible(true);
+    if (idleTimer.current) window.clearTimeout(idleTimer.current);
+    if (!settings.autoHideChrome) return;
+    idleTimer.current = window.setTimeout(() => {
+      if (railTab || inviteOpen || subsOpen) return;
+      setChromeVisible(false);
+    }, 5000);
+  }, [settings.autoHideChrome, railTab, inviteOpen, subsOpen]);
+
+  useEffect(() => {
+    bumpChrome();
+  }, [bumpChrome, railTab]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("partmov:settings", JSON.stringify(settings));
+    } catch {
+      /* ignore */
+    }
+  }, [settings]);
+
+  useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (!isHost && partnerState === "connected") {
-      // Guests may pause for both; play is host-led unless alone
+    for (let i = 0; i < video.textTracks.length; i++) {
+      const track = video.textTracks[i];
+      const match = subs.tracks[i];
+      const on = Boolean(subs.visible && match && match.id === subs.activeId);
+      track.mode = on ? "showing" : "hidden";
     }
-    if (video.paused) {
-      try {
-        await video.play();
-        setPlayState("playing");
-        broadcastPlayback("playing");
-      } catch {
-        setStatus("Tap play again — the browser blocked autoplay");
-      }
-    } else {
-      video.pause();
-      setPlayState("paused");
-      broadcastPlayback("paused");
-    }
-  }, [broadcastPlayback, isHost, partnerState]);
+  }, [subs.activeId, subs.tracks, subs.visible, media.videoSrc]);
 
-  const onSeek = useCallback(
-    (next: number) => {
+  const updateBuffered = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.buffered.length) {
+      setBufferedEnd(video.buffered.end(video.buffered.length - 1));
+    }
+    setBuffering(video.readyState < 3 && sync.playState === "playing");
+  }, [sync.playState]);
+
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!video.paused) {
+      if (!canPause) return;
+      sync.broadcastPause();
+      return;
+    }
+    if (!canPlay) return;
+    sync.requestPlayTogether();
+  }, [canPause, canPlay, sync]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const video = videoRef.current;
       if (!video) return;
-      if (!isHost) {
-        setStatus("Only the host can scrub the timeline");
-        return;
+      bumpChrome();
+      if (e.key === " " || e.key === "k") {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === "ArrowLeft" && canSeek) {
+        e.preventDefault();
+        sync.seekTo(Math.max(0, video.currentTime - 5));
+      } else if (e.key === "ArrowRight" && canSeek) {
+        e.preventDefault();
+        sync.seekTo(Math.min(video.duration || 0, video.currentTime + 5));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const v = Math.min(1, (muted ? 0 : volume) + 0.05);
+        setVolume(v);
+        setMuted(false);
+        video.volume = v;
+        video.muted = false;
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const v = Math.max(0, (muted ? 0 : volume) - 0.05);
+        setVolume(v);
+        video.volume = v;
+      } else if (e.key === "m" || e.key === "M") {
+        setMuted((m) => {
+          video.muted = !m;
+          return !m;
+        });
+      } else if (e.key === "f" || e.key === "F") {
+        void stageRef.current?.requestFullscreen?.();
+      } else if (e.key === "c" || e.key === "C") {
+        subs.cycleCaptions();
+      } else if (e.key === "Escape") {
+        setRailTab(null);
+        setInviteOpen(false);
+        setSubsOpen(false);
       }
-      video.currentTime = next;
-      setPosition(next);
-      const seq = ++seqRef.current;
-      send({
-        type: "seek",
-        position: next,
-        state: video.paused ? "paused" : "playing",
-        at: Date.now(),
-        seq,
-      });
-    },
-    [isHost, send],
-  );
-
-  const copyInvite = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(inviteUrl);
-      setLinkCopied(true);
-      window.setTimeout(() => setLinkCopied(false), 1800);
-    } catch {
-      setStatus(`Copy this link: ${inviteUrl}`);
     }
-  }, [inviteUrl]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [bumpChrome, canSeek, muted, subs, sync, togglePlay, volume]);
 
-  const sendChat = useCallback(() => {
-    const body = chatInput.trim();
-    if (!body) return;
-    const at = Date.now();
-    pushChat({ name, body, at });
-    send({ type: "chat", name, body, at });
-    setChatInput("");
-  }, [chatInput, name, pushChat, send]);
+  function leave() {
+    router.push("/watch");
+  }
 
-  const sendReaction = useCallback(
-    (glyph: string) => {
-      burstReaction(glyph, name);
-      send({ type: "reaction", name, glyph, at: Date.now() });
-    },
-    [burstReaction, name, send],
-  );
+  function endRoom() {
+    sync.endRoom();
+    setEnded(true);
+  }
 
-  const syncLabel =
-    partnerState !== "connected"
-      ? "waiting for partner"
-      : Math.abs(driftMs) <= LOCK_MS
-        ? "in sync"
-        : Math.abs(driftMs) < HARD_SEEK_MS
-          ? `nudging ${driftMs > 0 ? "+" : ""}${driftMs} ms`
-          : `catching up ${driftMs > 0 ? "+" : ""}${driftMs} ms`;
+  function updateSettings(next: RoomSettings) {
+    setSettings(next);
+    if (isHost) sync.broadcastSettings(next);
+  }
+
+  if (passphraseGate && !passOk) {
+    return (
+      <div className="cinema-boot">
+        <h1>Enter passphrase</h1>
+        <p>This room has a client-side gate set by the host.</p>
+        <form
+          className="stack stack--sm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (passphrase === passphraseGate) setPassOk(true);
+            else sync.setStatus("Wrong passphrase");
+          }}
+        >
+          <label className="watch-field">
+            <span>Passphrase</span>
+            <input value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoFocus />
+          </label>
+          <button type="submit" className="btn btn--primary">
+            Enter cinema
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  if (ended) {
+    return (
+      <div className="cinema-boot">
+        <h1>Room closed</h1>
+        <p>The host ended this private cinema.</p>
+        <button type="button" className="btn btn--primary" onClick={leave}>
+          Back to lobby
+        </button>
+      </div>
+    );
+  }
+
+  const title =
+    settings.roomTitle || media.media?.title || "Private cinema";
 
   return (
-    <div className="watch">
-      <div className="watch__top">
-        <div className="watch__meta">
-          <span className="eyebrow">Private room · {code}</span>
-          <h1 className="watch__title">{SAMPLE_FILM.title}</h1>
-          <p className="watch__credit">
-            {SAMPLE_FILM.credit} · {SAMPLE_FILM.license}
-          </p>
+    <div
+      className={`cinema${settings.reduceMotion ? " cinema--still" : ""}${chromeVisible ? "" : " cinema--idle"}`}
+      onMouseMove={bumpChrome}
+    >
+      <header className="cinema-top">
+        <div className="cinema-top__left">
+          <span className="cinema-top__code">{code}</span>
+          <strong>{title}</strong>
         </div>
-        <div className="watch__actions">
+        <div className="cinema-top__people">
+          <span className="people-avatar people-avatar--sm" style={{ background: color }} title={name}>
+            {initials(name)}
+          </span>
+          <span
+            className="people-avatar people-avatar--sm"
+            style={{ background: sync.partnerColor, opacity: sync.partnerName ? 1 : 0.4 }}
+            title={sync.partnerName ?? "Waiting"}
+          >
+            {sync.partnerName ? initials(sync.partnerName) : "?"}
+          </span>
+          <span className="cinema-top__badge">{isHost ? "host" : "guest"}</span>
+        </div>
+        <div className="cinema-top__meta">
+          <span className={`cinema-sync${sync.partnerState === "connected" ? " is-live" : ""}`}>
+            {sync.syncLabel}
+            {sync.partnerState === "connected" ? ` · ${sync.driftMs} ms` : ""}
+          </span>
           {isHost && (
-            <button type="button" className="btn btn--primary" onClick={copyInvite}>
-              {linkCopied ? "Invite copied" : "Copy invite link"}
+            <button type="button" className="btn btn--ghost cinema-top__invite" onClick={() => setInviteOpen(true)}>
+              Invite
             </button>
           )}
-          <button type="button" className="btn btn--ghost" onClick={() => setRailOpen((v) => !v)}>
-            {railOpen ? "Hide chat" : "Chat & reactions"}
-          </button>
         </div>
-      </div>
+      </header>
 
-      <div className={`watch__stage${railOpen ? " watch__stage--rail" : ""}`}>
-        <div className="watch__player">
-          <div className="room watch__room">
-            <div className="room__bar">
-              <span className="room__who">
-                <span className={`dot${isHost ? " dot--copper" : ""}`} aria-hidden="true" />
-                {isHost
-                  ? name.toLowerCase() === "you"
-                    ? "You hold the remote"
-                    : `${name} holds the remote`
-                  : `${partnerName ?? "Host"} holds the remote`}
-              </span>
-              <span className="room__who">
-                <span className={`dot${partnerState === "connected" ? "" : " dot--copper"}`} aria-hidden="true" />
-                {partnerState === "connected"
-                  ? `${partnerName ?? "Partner"} connected · ${syncLabel}`
-                  : status}
-              </span>
-            </div>
+      <div className="cinema-body">
+        <div className="cinema-main" ref={stageRef}>
+          <CinemaStage
+            videoRef={videoRef}
+            src={media.videoSrc}
+            poster={media.poster}
+            tracks={subs.tracks}
+            activeTrackId={subs.activeId}
+            subtitleVisible={subs.visible}
+            subtitleStyle={subs.style}
+            countdown={sync.countdown}
+            buffering={buffering}
+            waitingPartner={sync.partnerState !== "connected" && isHost}
+            partnerName={sync.partnerName}
+            reactions={sync.reactions}
+            onTimeUpdate={() => {
+              const v = videoRef.current;
+              if (!v || sync.applyingRef.current) {
+                if (v) sync.setPosition(v.currentTime);
+                updateBuffered();
+                return;
+              }
+              sync.setPosition(v.currentTime);
+              updateBuffered();
+            }}
+            onLoadedMetadata={() => {
+              const v = videoRef.current;
+              if (v) sync.setDuration(v.duration || 0);
+              updateBuffered();
+            }}
+            onPlay={() => {
+              if (!sync.applyingRef.current) sync.setPlayState("playing");
+            }}
+            onPause={() => {
+              if (!sync.applyingRef.current) sync.setPlayState("paused");
+            }}
+            onError={media.onVideoError}
+            onClickStage={togglePlay}
+          />
+          <ControlStrip
+            playing={sync.playState === "playing"}
+            position={sync.position}
+            duration={sync.duration}
+            bufferedEnd={bufferedEnd}
+            volume={volume}
+            muted={muted}
+            rate={sync.playbackRate}
+            canPlay={canPlay || sync.playState === "playing"}
+            canSeek={canSeek}
+            canRate={canRate}
+            onTogglePlay={togglePlay}
+            onSeek={(t) => {
+              if (!canSeek) return;
+              sync.seekTo(t);
+            }}
+            onSkip={(delta) => {
+              if (!canSeek) return;
+              const video = videoRef.current;
+              if (!video) return;
+              const next = Math.max(0, Math.min(video.duration || 0, video.currentTime + delta));
+              sync.seekTo(next);
+            }}
+            onVolume={(v) => {
+              setVolume(v);
+              setMuted(v === 0);
+              if (videoRef.current) {
+                videoRef.current.volume = v;
+                videoRef.current.muted = v === 0;
+              }
+            }}
+            onMute={() => {
+              setMuted((m) => {
+                const next = !m;
+                if (videoRef.current) videoRef.current.muted = next;
+                return next;
+              });
+            }}
+            onFullscreen={() => {
+              const el = stageRef.current;
+              if (!el) return;
+              if (document.fullscreenElement) void document.exitFullscreen();
+              else void el.requestFullscreen();
+            }}
+            onPiP={async () => {
+              const v = videoRef.current as HTMLVideoElement & {
+                requestPictureInPicture?: () => Promise<void>;
+              };
+              if (v?.requestPictureInPicture) await v.requestPictureInPicture();
+            }}
+            onRate={(r) => {
+              if (!canRate) return;
+              sync.setRate(r);
+            }}
+            onOpenSubtitles={() => setSubsOpen(true)}
+            captionsOn={subs.visible && Boolean(subs.activeId)}
+          />
+        </div>
 
-            <div className="watch__video-wrap">
-              <video
-                ref={videoRef}
-                className="watch__video"
-                poster={SAMPLE_FILM.poster}
-                playsInline
-                preload="auto"
-                onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
-                onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
-                onError={(e) => {
-                  const el = e.currentTarget;
-                  if (el.dataset.fallback === "1") return;
-                  el.dataset.fallback = "1";
-                  el.src = SAMPLE_FILM.fallbackSrc;
-                  el.poster = SAMPLE_FILM.fallbackPoster;
-                  el.load();
-                }}
-                onPlay={() => {
-                  setPlayState("playing");
-                  if (!applyingRef.current && Date.now() - lastLocalActionRef.current > 80) {
-                    broadcastPlayback("playing");
-                  }
-                }}
-                onPause={() => {
-                  setPlayState("paused");
-                  if (!applyingRef.current && Date.now() - lastLocalActionRef.current > 80) {
-                    broadcastPlayback("paused");
-                  }
-                }}
+        <aside className={`cinema-rail${railTab ? " is-open" : ""}`}>
+          <div className="cinema-rail__tabs">
+            {(["chat", "people", "media", "settings"] as RailTab[]).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                className={railTab === tab ? "is-on" : ""}
+                onClick={() => setRailTab((t) => (t === tab ? null : tab))}
               >
-                <source src={SAMPLE_FILM.src} type="video/mp4" />
-                <source src={SAMPLE_FILM.fallbackSrc} type="video/mp4" />
-              </video>
-              <div className="watch__bursts" aria-hidden="true">
-                {reactions.map((r) => (
-                  <span key={r.id} className="watch__burst">
-                    {r.glyph}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="room__controls watch__controls">
-              <button type="button" className="watch__play" onClick={togglePlay}>
-                {playState === "playing" ? "Pause for both" : "Play together"}
+                {tab}
               </button>
-              <span className="mono watch__time">
-                {formatTime(position)} / {formatTime(duration)}
-              </span>
-              <input
-                className="watch__scrub"
-                type="range"
-                min={0}
-                max={duration || 0}
-                step={0.1}
-                value={Math.min(position, duration || 0)}
-                disabled={!isHost}
-                onChange={(e) => onSeek(Number(e.target.value))}
-                aria-label="Seek"
-              />
-              <span className="watch__sync mono">{syncLabel}</span>
-            </div>
+            ))}
           </div>
-          {error && <p className="watch__error">{error}</p>}
-          <p className="watch__hint">{status}</p>
-        </div>
-
-        {railOpen && (
-          <aside className="watch__rail">
-            <div className="watch__rail-head">
-              <span className="eyebrow">Together</span>
-              <p>Soft notes while the film runs. Nothing is stored.</p>
-            </div>
-            <div className="watch__reactions">
-              {REACTIONS.map((glyph) => (
-                <button key={glyph} type="button" className="watch__reaction" onClick={() => sendReaction(glyph)}>
-                  {glyph}
-                </button>
-              ))}
-            </div>
-            <div className="watch__chat">
-              {chat.length === 0 && <p className="watch__chat-empty">No messages yet.</p>}
-              {chat.map((line) => (
-                <div key={line.id} className="watch__chat-line">
-                  <strong>{line.name}</strong>
-                  <span>{line.body}</span>
-                </div>
-              ))}
-            </div>
-            <form
-              className="watch__chat-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                sendChat();
+          {railTab === "chat" && (
+            <ChatRail
+              chat={sync.chat}
+              partnerTyping={sync.partnerTyping}
+              partnerName={sync.partnerName}
+              onSend={sync.sendChat}
+              onReaction={sync.sendReaction}
+              onTyping={sync.sendTyping}
+            />
+          )}
+          {railTab === "people" && (
+            <PeoplePanel
+              role={role}
+              name={name}
+              color={color}
+              partnerName={sync.partnerName}
+              partnerColor={sync.partnerColor}
+              partnerState={sync.partnerState}
+              selfReady={sync.selfReady}
+              partnerReady={sync.partnerReady}
+              controlMode={sync.controlMode}
+              remoteHolder={sync.remoteHolder}
+              controlRequested={sync.controlRequested}
+              onSetMode={sync.setMode}
+              onRequestControl={sync.requestControl}
+              onApproveControl={() => {
+                sync.setMode("handed_to_guest", "guest");
+                sync.setControlRequested(false);
               }}
-            >
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Say something quiet…"
-                maxLength={200}
-              />
-              <button type="submit" className="btn btn--primary">
-                Send
-              </button>
-            </form>
-          </aside>
-        )}
+              onDenyControl={() => sync.setControlRequested(false)}
+            />
+          )}
+          {railTab === "media" && (
+            <MediaPanel
+              isHost={isHost}
+              currentTitle={media.media?.title}
+              transfer={media.transfer}
+              error={media.mediaError}
+              onPickCatalog={pickCatalog}
+              onPasteUrl={pasteUrl}
+              onLocalFile={(file) => void media.sendLocalFile(file)}
+            />
+          )}
+          {railTab === "settings" && (
+            <SettingsPanel
+              settings={settings}
+              isHost={isHost}
+              onChange={updateSettings}
+              onClearChat={() => sync.setChat([])}
+              onLeave={leave}
+              onEndRoom={isHost ? endRoom : undefined}
+            />
+          )}
+        </aside>
       </div>
+
+      <p className="cinema-status" role="status">
+        {sync.error ?? sync.status}
+        {media.media?.credit ? ` · ${media.media.credit}` : ""}
+      </p>
+
+      <SubtitleMenu
+        open={subsOpen}
+        onClose={() => setSubsOpen(false)}
+        tracks={subs.tracks}
+        activeId={subs.activeId}
+        visible={subs.visible}
+        style={subs.style}
+        canAdd={isHost}
+        onSelect={(id) => {
+          subs.setActiveId(id);
+          if (canControlPlayback(role, sync.controlMode, sync.remoteHolder, "subtitle_track") || isHost) {
+            sync.broadcastSubtitle(id);
+          }
+        }}
+        onVisible={(v) => {
+          subs.setVisible(v);
+          if (!v && (isHost || canControlPlayback(role, sync.controlMode, sync.remoteHolder, "subtitle_track"))) {
+            sync.broadcastSubtitle(null);
+          } else if (v && subs.activeId) {
+            if (isHost || canControlPlayback(role, sync.controlMode, sync.remoteHolder, "subtitle_track")) {
+              sync.broadcastSubtitle(subs.activeId);
+            }
+          }
+        }}
+        onStyle={subs.persistStyle}
+        onAddFile={(file) => {
+          void (async () => {
+            const track = await subs.addTrackFromFile(file);
+            await media.sendSubtitleFile(file);
+            if (track) sync.broadcastSubtitle(track.id);
+          })();
+        }}
+      />
+
+      <InviteSheet
+        open={inviteOpen}
+        onClose={() => setInviteOpen(false)}
+        code={code}
+        inviteUrl={inviteUrl}
+        passphrase={roomPassphrase}
+        onPassphrase={setRoomPassphrase}
+      />
     </div>
   );
 }
