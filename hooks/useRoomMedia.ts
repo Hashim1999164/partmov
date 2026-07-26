@@ -4,7 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCatalogFilm, isDirectMediaUrl } from "@/lib/catalog";
 import {
   assembleBase64Chunks,
+  assemblePrefixBase64Chunks,
   encodeFileChunks,
+  estimateBytesFromBase64Chunks,
   makeTransferId,
 } from "@/lib/media-transfer";
 import { materializeFile } from "@/lib/read-blob";
@@ -16,7 +18,10 @@ export type TransferProgress = {
   kind: "video" | "subtitle";
   pct: number;
   direction: "send" | "receive";
-  phase: "reading" | "sending" | "waiting_peer" | "receiving" | "finalizing";
+  phase: "reading" | "sending" | "waiting_peer" | "receiving" | "finalizing" | "streaming";
+  bytesLoaded?: number;
+  bytesTotal?: number;
+  startedAt?: number;
 } | null;
 
 type UseRoomMediaArgs = {
@@ -78,13 +83,15 @@ export function useRoomMedia({
     Map<
       string,
       {
-        chunks: string[];
+        chunks: Array<string | undefined>;
         total: number;
         fileName: string;
         mime: string;
         kind: "video" | "subtitle";
         label?: string;
         size: number;
+        startedAt: number;
+        lastProgressiveAt: number;
       }
     >
   >(new Map());
@@ -248,6 +255,7 @@ export function useRoomMedia({
       }
 
       let durable = file;
+      const readStarted = Date.now();
       try {
         setTransfer({
           transferId: "read",
@@ -256,6 +264,9 @@ export function useRoomMedia({
           pct: 0,
           direction: "send",
           phase: "reading",
+          bytesTotal: file.size,
+          bytesLoaded: 0,
+          startedAt: readStarted,
         });
         durable = await materializeFile(file, (pct) => {
           setTransfer({
@@ -265,6 +276,9 @@ export function useRoomMedia({
             pct,
             direction: "send",
             phase: "reading",
+            bytesTotal: file.size,
+            bytesLoaded: Math.round((pct / 100) * file.size),
+            startedAt: readStarted,
           });
         });
       } catch (err) {
@@ -285,10 +299,10 @@ export function useRoomMedia({
         kind: "file",
         title: durable.name.replace(/\.[^.]+$/, "") || "Local film",
       };
+      const sendStarted = Date.now();
 
       if (replace) {
-        setChangingTitle(desc.title);
-        onChanging?.(desc.title);
+        // Host plays the new film immediately while the partner receives bytes.
         send({ type: "media_changing", title: desc.title, seq: Date.now() });
         pendingReplaceRef.current = {
           transferId,
@@ -297,6 +311,7 @@ export function useRoomMedia({
           desc,
           peerReady: !getPartnerConnectedRef.current?.(),
         };
+        applyDescriptor(desc, localUrl);
       } else {
         activeBlobRef.current = localUrl;
         heldVideoRef.current = { file: durable, transferId, desc, blobUrl: localUrl };
@@ -318,7 +333,10 @@ export function useRoomMedia({
         kind: "video",
         pct: 0,
         direction: "send",
-        phase: "reading",
+        phase: "sending",
+        bytesTotal: durable.size,
+        bytesLoaded: 0,
+        startedAt: sendStarted,
       });
 
       const { chunks, total } = await encodeFileChunks(durable);
@@ -334,15 +352,18 @@ export function useRoomMedia({
         const sentPct = Math.round(((i + 1) / total) * 100);
         const linked = Boolean(getPartnerConnectedRef.current?.());
         const ackPct = linked ? Math.round((acked / total) * 100) : sentPct;
+        const pct = Math.min(sentPct, Math.max(ackPct, Math.round(sentPct * 0.85)));
         setTransfer({
           transferId,
           fileName: durable.name,
           kind: "video",
-          pct: Math.min(sentPct, Math.max(ackPct, Math.round(sentPct * 0.85))),
+          pct,
           direction: "send",
           phase: "sending",
+          bytesTotal: durable.size,
+          bytesLoaded: Math.round((pct / 100) * durable.size),
+          startedAt: sendStarted,
         });
-        // Yield so UI + PeerJS can flush; slows large floods that cause guest lag.
         await new Promise((r) => setTimeout(r, linked ? 8 : 0));
       }
       send({ type: "file_done", transferId });
@@ -363,6 +384,9 @@ export function useRoomMedia({
         pct: 99,
         direction: "send",
         phase: "waiting_peer",
+        bytesTotal: durable.size,
+        bytesLoaded: durable.size,
+        startedAt: sendStarted,
       });
 
       // Wait for guest file_ready (or timeout → commit anyway so host is not stuck).
@@ -400,6 +424,7 @@ export function useRoomMedia({
         size: file.size,
         kind: "video",
       });
+      const sendStarted = Date.now();
       setTransfer({
         transferId,
         fileName: file.name,
@@ -407,17 +432,24 @@ export function useRoomMedia({
         pct: 0,
         direction: "send",
         phase: "sending",
+        bytesTotal: file.size,
+        bytesLoaded: 0,
+        startedAt: sendStarted,
       });
       const { chunks, total } = await encodeFileChunks(file);
       for (let i = 0; i < chunks.length; i++) {
         send({ type: "file_chunk", transferId, index: i, total, data: chunks[i] });
+        const pct = Math.round(((i + 1) / total) * 100);
         setTransfer({
           transferId,
           fileName: file.name,
           kind: "video",
-          pct: Math.round(((i + 1) / total) * 100),
+          pct,
           direction: "send",
           phase: "sending",
+          bytesTotal: file.size,
+          bytesLoaded: Math.round((pct / 100) * file.size),
+          startedAt: sendStarted,
         });
         await new Promise((r) => setTimeout(r, 8));
       }
@@ -483,15 +515,16 @@ export function useRoomMedia({
         const prev = ackCountRef.current.get(msg.transferId) ?? 0;
         const next = Math.max(prev, msg.index + 1);
         ackCountRef.current.set(msg.transferId, next);
-        setTransfer((t) =>
-          t && t.transferId === msg.transferId && t.direction === "send"
-            ? {
-                ...t,
-                pct: Math.round((next / msg.total) * 100),
-                phase: next >= msg.total ? "waiting_peer" : "sending",
-              }
-            : t,
-        );
+        setTransfer((t) => {
+          if (!t || t.transferId !== msg.transferId || t.direction !== "send") return t;
+          const pct = Math.round((next / msg.total) * 100);
+          return {
+            ...t,
+            pct,
+            phase: next >= msg.total ? "waiting_peer" : "sending",
+            bytesLoaded: t.bytesTotal ? Math.round((pct / 100) * t.bytesTotal) : t.bytesLoaded,
+          };
+        });
         return;
       }
 
@@ -514,7 +547,10 @@ export function useRoomMedia({
           kind: msg.kind,
           label: msg.label,
           size: msg.size,
+          startedAt: Date.now(),
+          lastProgressiveAt: 0,
         });
+        // Soft changing flag — TransferDock shows progress; don't block the stage forever.
         if (msg.kind === "video") {
           setChangingTitle(msg.fileName.replace(/\.[^.]+$/, "") || "New film");
           onChanging?.(msg.fileName);
@@ -526,6 +562,9 @@ export function useRoomMedia({
           pct: 0,
           direction: "receive",
           phase: "receiving",
+          bytesTotal: msg.size,
+          bytesLoaded: 0,
+          startedAt: Date.now(),
         });
         return;
       }
@@ -536,14 +575,46 @@ export function useRoomMedia({
         bag.chunks[msg.index] = msg.data;
         bag.total = msg.total;
         const filled = bag.chunks.filter(Boolean).length;
+        const pct = Math.round((filled / msg.total) * 100);
+        const bytesLoaded = estimateBytesFromBase64Chunks(bag.chunks, filled) || Math.round((pct / 100) * (bag.size || 0));
         setTransfer({
           transferId: msg.transferId,
           fileName: bag.fileName,
           kind: bag.kind,
-          pct: Math.round((filled / msg.total) * 100),
+          pct,
           direction: "receive",
-          phase: "receiving",
+          phase: pct >= 12 && bag.kind === "video" ? "streaming" : "receiving",
+          bytesTotal: bag.size,
+          bytesLoaded,
+          startedAt: bag.startedAt,
         });
+
+        // Progressive blob playback: once we have a contiguous prefix, start buffering like a stream.
+        if (bag.kind === "video" && pct >= 12) {
+          const now = Date.now();
+          if (now - (bag.lastProgressiveAt || 0) > 900) {
+            bag.lastProgressiveAt = now;
+            const partial = assemblePrefixBase64Chunks(bag.chunks);
+            if (partial && partial.size > 64_000) {
+              const typed = new Blob([partial], { type: bag.mime || "video/mp4" });
+              const url = URL.createObjectURL(typed);
+              trackBlob(url);
+              const desc: MediaDescriptor = {
+                kind: "file",
+                title: bag.fileName.replace(/\.[^.]+$/, "") || "Shared film",
+              };
+              // Keep changing title soft-cleared once we can stream ahead.
+              setChangingTitle(null);
+              onChanging?.(null);
+              setMedia(desc);
+              setMediaError(null);
+              setVideoSrc(url);
+              activeBlobRef.current = url;
+              onVideoUrl?.(url, desc);
+            }
+          }
+        }
+
         send({
           type: "file_chunk_ack",
           transferId: msg.transferId,
@@ -563,15 +634,23 @@ export function useRoomMedia({
           pct: 100,
           direction: "receive",
           phase: "finalizing",
+          bytesTotal: bag.size,
+          bytesLoaded: bag.size,
+          startedAt: bag.startedAt,
         });
-        const blob = assembleBase64Chunks(bag.chunks);
+        const complete = bag.chunks.slice(0, bag.total || bag.chunks.length);
+        if (complete.some((c) => !c)) {
+          setMediaError("Transfer incomplete — ask the host to resend the film");
+          setTransfer(null);
+          return;
+        }
+        const blob = assembleBase64Chunks(complete as string[]);
         const typed = new Blob([blob], { type: bag.mime || "application/octet-stream" });
         const url = URL.createObjectURL(typed);
         trackBlob(url);
         incomingRef.current.delete(msg.transferId);
 
         if (bag.kind === "video") {
-          // Wait for host media_set / commit — but apply when we have bytes so guest is ready.
           revokeAllExcept(url);
           activeBlobRef.current = url;
           const desc: MediaDescriptor = {
@@ -587,7 +666,7 @@ export function useRoomMedia({
         setTransfer(null);
       }
     },
-    [applyDescriptor, onChanging, onSubtitleReceived, revokeAllExcept, send, trackBlob],
+    [applyDescriptor, onChanging, onSubtitleReceived, onVideoUrl, revokeAllExcept, send, trackBlob],
   );
 
   const onMediaFromPeer = useCallback(

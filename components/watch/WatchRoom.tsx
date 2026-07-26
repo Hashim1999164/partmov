@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { browseTitleFromUrl, normalizeBrowseUrl } from "@/lib/browse";
 import { getCatalogFilm } from "@/lib/catalog";
 import {
+  DEFAULT_SESSION_MS,
   DEFAULT_SETTINGS,
   canControlPlayback,
   initials,
@@ -25,6 +26,8 @@ import { PeoplePanel } from "./PeoplePanel";
 import { ChatRail } from "./ChatRail";
 import { SettingsPanel } from "./SettingsPanel";
 import { InviteSheet } from "./InviteSheet";
+import { TransferDock } from "./TransferDock";
+import { SessionToast } from "./SessionToast";
 import { useAdaptivePlayer } from "@/hooks/useAdaptivePlayer";
 import { fetchPlaybackUrl, refreshPlaybackUrl, streamingV2Enabled } from "@/lib/streaming";
 import { clearPendingMedia, getPendingMedia } from "@/lib/pending-media";
@@ -100,6 +103,8 @@ export function WatchRoom({
   const [passOk, setPassOk] = useState(!passphraseGate);
   const [roomPassphrase, setRoomPassphrase] = useState("");
   const [expireLeftMs, setExpireLeftMs] = useState<number | null>(null);
+  const [expiryToast, setExpiryToast] = useState<string | null>(null);
+  const expiryNoticesRef = useRef<Set<string>>(new Set());
 
   const isHost = role === "host";
 
@@ -460,7 +465,19 @@ export function WatchRoom({
     if (isHost) sync.broadcastSettings(next);
   }
 
-  // Session expire countdown
+  // Default new rooms to a 3-hour session (host stamps once).
+  useEffect(() => {
+    if (!isHost || ended) return;
+    if (settings.expiresAt != null) return;
+    const expiresAt = Date.now() + DEFAULT_SESSION_MS;
+    const next = { ...settings, expiresAt };
+    setSettings(next);
+    sync.setSessionExpire(expiresAt);
+    sync.broadcastSettings(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHost, ended]);
+
+  // Session expire countdown + advance warnings
   useEffect(() => {
     if (!settings.expiresAt || ended) {
       setExpireLeftMs(null);
@@ -479,12 +496,32 @@ export function WatchRoom({
         return;
       }
       setExpireLeftMs(left);
+
+      const marks: Array<{ key: string; at: number; message: string }> = [
+        { key: "30m", at: 30 * 60 * 1000, message: "Session ends in 30 minutes." },
+        { key: "10m", at: 10 * 60 * 1000, message: "Session ends in 10 minutes." },
+        { key: "5m", at: 5 * 60 * 1000, message: "Session ends in 5 minutes." },
+        { key: "1m", at: 60 * 1000, message: "Session ends in 1 minute — wrapping up soon." },
+      ];
+      for (const m of marks) {
+        if (left <= m.at && left > m.at - 1500 && !expiryNoticesRef.current.has(m.key)) {
+          expiryNoticesRef.current.add(m.key);
+          setExpiryToast(m.message);
+        }
+      }
     };
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.expiresAt, ended, isHost]);
+
+  useEffect(() => {
+    if (!expiryToast) return;
+    if (expireLeftMs !== null && expireLeftMs <= 60_000) return;
+    const id = window.setTimeout(() => setExpiryToast(null), 12_000);
+    return () => window.clearTimeout(id);
+  }, [expiryToast, expireLeftMs]);
 
   if (passphraseGate && !passOk) {
     return (
@@ -580,7 +617,12 @@ export function WatchRoom({
             {sync.syncLabel}
             {sync.partnerState === "connected" ? ` · ${sync.driftMs} ms` : ""}
           </span>
-          {expireLeftMs !== null && expireLeftMs > 0 && (
+          {expireLeftMs !== null && expireLeftMs > 0 && expireLeftMs <= 60_000 && (
+            <span className="cinema-top__expire cinema-top__expire--urgent" title="Session expires">
+              {Math.ceil(expireLeftMs / 1000)}s
+            </span>
+          )}
+          {expireLeftMs !== null && expireLeftMs > 60_000 && (
             <span className="cinema-top__expire" title="Session expires">
               {Math.floor(expireLeftMs / 60000)}m {Math.floor((expireLeftMs % 60000) / 1000)}s
             </span>
@@ -617,12 +659,10 @@ export function WatchRoom({
               waitingPartner={sync.partnerState !== "connected" && isHost}
               partnerName={sync.partnerName}
               waitingMedia={!media.hasPlayableMedia && !useHls}
-              changingTitle={changingTitle || media.changingTitle}
-              transferLabel={
-                media.transfer
-                  ? `${media.transfer.direction === "send" ? "Sending" : "Receiving"} ${media.transfer.fileName} · ${media.transfer.pct}%`
-                  : null
+              changingTitle={
+                media.transfer ? null : changingTitle || media.changingTitle
               }
+              transferLabel={null}
               reactions={sync.reactions}
               onTimeUpdate={() => {
                 const v = videoRef.current;
@@ -794,11 +834,20 @@ export function WatchRoom({
       </div>
 
       <p className="cinema-status" role="status">
-        {changingTitle || media.changingTitle
-          ? `Changing film to “${changingTitle || media.changingTitle}”…`
-          : (sync.error ?? sync.status)}
+        {media.transfer
+          ? `${media.transfer.direction === "send" ? "Sending" : "Receiving"} “${media.transfer.fileName}” · ${media.transfer.pct}%`
+          : changingTitle || media.changingTitle
+            ? `Changing film to “${changingTitle || media.changingTitle}”…`
+            : (sync.error ?? sync.status)}
         {media.media?.credit ? ` · ${media.media.credit}` : ""}
       </p>
+
+      <TransferDock transfer={media.transfer} />
+      <SessionToast
+        message={expiryToast}
+        tone={expireLeftMs !== null && expireLeftMs <= 5 * 60 * 1000 ? "warn" : "info"}
+        onDismiss={() => setExpiryToast(null)}
+      />
 
       <SubtitleMenu
         open={subsOpen}

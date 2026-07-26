@@ -44,14 +44,19 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   reduceMotion: false,
   joinSound: false,
   roomTitle: "",
+  /** Set per-room on create; null means Off in settings UI until stamped. */
   expiresAt: null,
 };
+
+/** Default lifetime for new rooms (3 hours). */
+export const DEFAULT_SESSION_MS = 3 * 60 * 60 * 1000;
 
 export const EXPIRE_PRESETS_MS = [
   { label: "Off", ms: 0 },
   { label: "30 minutes", ms: 30 * 60 * 1000 },
   { label: "1 hour", ms: 60 * 60 * 1000 },
   { label: "2 hours", ms: 2 * 60 * 60 * 1000 },
+  { label: "3 hours", ms: 3 * 60 * 60 * 1000 },
   { label: "6 hours", ms: 6 * 60 * 60 * 1000 },
 ] as const;
 

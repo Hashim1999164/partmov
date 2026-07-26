@@ -526,6 +526,7 @@ export function useRoomSync({
   // PeerJS
   useEffect(() => {
     let cancelled = false;
+    let claimRetries = 0;
 
     async function connect() {
       try {
@@ -537,6 +538,24 @@ export function useRoomSync({
         peer.on("error", (err) => {
           const message = String((err as { type?: string }).type ?? err);
           if (message.includes("unavailable-id") || message.includes("ID is taken")) {
+            // After host handoff the old host peer can linger briefly — retry a few times.
+            if (isHost && !cancelled && claimRetries < 4) {
+              claimRetries += 1;
+              setStatus("Claiming host seat…");
+              window.setTimeout(() => {
+                if (cancelled) return;
+                try {
+                  if (peerRef.current === peer) {
+                    peer.destroy();
+                    peerRef.current = null;
+                  }
+                } catch {
+                  /* ignore */
+                }
+                void connect();
+              }, 700 * claimRetries);
+              return;
+            }
             setError("That room code is already live. Ask for a fresh invite.");
             return;
           }
@@ -545,6 +564,7 @@ export function useRoomSync({
 
         peer.on("open", () => {
           if (cancelled) return;
+          claimRetries = 0;
           setStatus(isHost ? "Room ready — share the invite link" : "Connecting to host…");
           if (!isHost) {
             setPartnerState("connecting");
@@ -567,6 +587,23 @@ export function useRoomSync({
       conn.on("data", (data) => onMessage(data as SyncMessage));
       conn.on("close", () => {
         if (endedRef.current || becomingHostRef.current) return;
+        // Unexpected host drop → guest inherits the room (same as explicit leave).
+        if (roleRef.current === "guest") {
+          becomingHostRef.current = true;
+          suppressLeaveNotifyRef.current = true;
+          setPartnerState("waiting");
+          setPartnerReady(false);
+          partnerReadyRef.current = false;
+          setPartnerName(null);
+          setControlMode("host_only");
+          setRemoteHolder("host");
+          setStatus("Host left — you are now the host");
+          window.setTimeout(() => {
+            onBecomeHost?.();
+            becomingHostRef.current = false;
+          }, 350);
+          return;
+        }
         setPartnerState("reconnecting");
         setStatus("Connection dropped — trying to recover");
       });
@@ -690,9 +727,10 @@ export function useRoomSync({
     const video = videoRef.current;
     if (!video) return;
     const alone = partnerState !== "connected";
-    const bothReady = alone || (selfReadyRef.current && (partnerReadyRef.current || true));
+    const bothReady = alone || (selfReadyRef.current && partnerReadyRef.current);
     if (!bothReady) {
-      setStatus("Waiting for buffers…");
+      // Still start together — buffers catch up via heartbeat; don't strand the host on a spinner.
+      setStatus("Starting — catching up buffers…");
     }
     scheduleStartTogether(video.currentTime);
   }, [partnerState, scheduleStartTogether, videoRef]);

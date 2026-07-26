@@ -50,6 +50,34 @@ export function assembleBase64Chunks(chunks: string[]): Blob {
   return new Blob([bytes]);
 }
 
+/** Assemble only the contiguous prefix of chunks (for progressive blob playback). */
+export function assemblePrefixBase64Chunks(chunks: Array<string | undefined>): Blob | null {
+  const prefix: string[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i];
+    if (!c) break;
+    prefix.push(c);
+  }
+  if (prefix.length === 0) return null;
+  return assembleBase64Chunks(prefix);
+}
+
+export function estimateBytesFromBase64Chunks(chunks: Array<string | undefined>, filled: number): number {
+  if (filled <= 0) return 0;
+  let sample = 0;
+  let n = 0;
+  for (const c of chunks) {
+    if (!c) continue;
+    sample += c.length;
+    n += 1;
+    if (n >= 8) break;
+  }
+  if (n === 0) return 0;
+  const avg = sample / n;
+  // base64 → ~3/4 raw bytes
+  return Math.round(filled * avg * 0.75);
+}
+
 export function makeTransferId(): string {
   return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }

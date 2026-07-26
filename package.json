@@ -23,7 +23,8 @@
     "test:golden": "node --import tsx scripts/tests/golden-media.ts",
     "test:fault": "node --import tsx scripts/tests/fault-injection.ts",
     "test:gates": "npm run test:unit && npm run test:golden && npm run test:fault && npm run test:load",
-    "test:load": "node scripts/load/k6-smoke.js"
+    "test:load": "node scripts/load/k6-smoke.js",
+    "cleanup:r2": "node scripts/cleanup-r2.mjs"
   },
   "dependencies": {
     "@partmov/protocol": "0.1.0",
