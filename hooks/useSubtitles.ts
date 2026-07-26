@@ -73,6 +73,19 @@ export function useSubtitles() {
     }
   }, [activeId, tracks, visible]);
 
+  const clearTracks = useCallback(() => {
+    for (const t of tracks) {
+      try {
+        URL.revokeObjectURL(t.url);
+      } catch {
+        /* ignore */
+      }
+    }
+    setTracks([]);
+    setActiveId(null);
+    setVisible(false);
+  }, [tracks]);
+
   return {
     tracks,
     activeId,
@@ -84,5 +97,6 @@ export function useSubtitles() {
     addTrackFromFile,
     addTrackFromUrl,
     cycleCaptions,
+    clearTracks,
   };
 }

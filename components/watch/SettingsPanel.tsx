@@ -1,6 +1,7 @@
 "use client";
 
-import type { RoomSettings, SyncStrictness } from "@/lib/sync-protocol";
+import type { RoomEndReason, RoomSettings, SyncStrictness } from "@/lib/sync-protocol";
+import { EXPIRE_PRESETS_MS } from "@/lib/sync-protocol";
 
 type Props = {
   settings: RoomSettings;
@@ -8,13 +9,32 @@ type Props = {
   onChange: (next: RoomSettings) => void;
   onClearChat: () => void;
   onLeave: () => void;
-  onEndRoom?: () => void;
+  onEndSession?: () => void;
+  onForceEnd?: () => void;
+  onExpirePreset?: (ms: number) => void;
 };
 
-export function SettingsPanel({ settings, isHost, onChange, onClearChat, onLeave, onEndRoom }: Props) {
+export function SettingsPanel({
+  settings,
+  isHost,
+  onChange,
+  onClearChat,
+  onLeave,
+  onEndSession,
+  onForceEnd,
+  onExpirePreset,
+}: Props) {
   function patch(partial: Partial<RoomSettings>) {
     onChange({ ...settings, ...partial });
   }
+
+  const expireValue =
+    !settings.expiresAt
+      ? "0"
+      : String(
+          EXPIRE_PRESETS_MS.find((p) => p.ms > 0 && Math.abs((settings.expiresAt ?? 0) - Date.now() - p.ms) < 60_000)
+            ?.ms ?? "custom",
+        );
 
   return (
     <div className="rail-panel">
@@ -83,6 +103,27 @@ export function SettingsPanel({ settings, isHost, onChange, onClearChat, onLeave
         Soft sound when partner joins
       </label>
 
+      {isHost && onExpirePreset && (
+        <label className="watch-field">
+          <span>Session expires in</span>
+          <select
+            value={expireValue === "custom" ? "0" : expireValue}
+            onChange={(e) => onExpirePreset(Number(e.target.value))}
+          >
+            {EXPIRE_PRESETS_MS.map((p) => (
+              <option key={p.label} value={p.ms}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          {settings.expiresAt ? (
+            <span className="rail-panel__muted">
+              Ends {new Date(settings.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          ) : null}
+        </label>
+      )}
+
       <button type="button" className="btn btn--ghost" onClick={onClearChat}>
         Clear chat
       </button>
@@ -91,11 +132,24 @@ export function SettingsPanel({ settings, isHost, onChange, onClearChat, onLeave
         Leave room
       </button>
 
-      {isHost && onEndRoom && (
-        <button type="button" className="btn btn--primary" onClick={onEndRoom}>
-          End room for everyone
+      {isHost && onEndSession && (
+        <button type="button" className="btn btn--ghost" onClick={onEndSession}>
+          End session
         </button>
       )}
+
+      {isHost && onForceEnd && (
+        <button type="button" className="btn btn--primary" onClick={onForceEnd}>
+          Force end session
+        </button>
+      )}
+
+      <p className="rail-panel__muted">
+        Leaving as host hands the room to your partner. Ending wipes local film data on each device — nothing is
+        stored on Partmov servers.
+      </p>
     </div>
   );
 }
+
+export type { RoomEndReason };

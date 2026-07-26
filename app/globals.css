@@ -1545,6 +1545,13 @@ tbody td code {
   color: var(--sage);
 }
 
+.cinema-top__expire {
+  font-size: 0.72rem;
+  font-family: var(--font-mono), monospace;
+  color: var(--amber, #d9a95c);
+  letter-spacing: 0.04em;
+}
+
 .cinema-body {
   flex: 1;
   display: grid;

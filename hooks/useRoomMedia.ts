@@ -331,6 +331,24 @@ export function useRoomMedia({
     setMediaError("Could not load this film");
   }, [media, videoSrc]);
 
+  /** Revoke blobs and clear session media — nothing was stored on Partmov servers. */
+  const wipeSession = useCallback(() => {
+    for (const u of blobUrlsRef.current) {
+      try {
+        URL.revokeObjectURL(u);
+      } catch {
+        /* ignore */
+      }
+    }
+    blobUrlsRef.current = [];
+    incomingRef.current.clear();
+    setTransfer(null);
+    setVideoSrc("");
+    setMedia(null);
+    setPoster(undefined);
+    setMediaError(null);
+  }, []);
+
   return {
     media,
     videoSrc,
@@ -345,5 +363,6 @@ export function useRoomMedia({
     onMediaFromPeer,
     onVideoError,
     applyDescriptor,
+    wipeSession,
   };
 }

@@ -9,6 +9,7 @@ import {
   initials,
   type MediaDescriptor,
   type Role,
+  type RoomEndReason,
   type RoomSettings,
 } from "@/lib/sync-protocol";
 import { useRoomSync } from "@/hooks/useRoomSync";
@@ -45,13 +46,17 @@ function loadSettings(): RoomSettings {
   return DEFAULT_SETTINGS;
 }
 
-export function WatchRoom({ code, role, name, color, initialMediaId, passphraseGate }: Props) {
+export function WatchRoom({ code, role: initialRole, name, color, initialMediaId, passphraseGate }: Props) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const idleTimer = useRef<number | null>(null);
 
-  const [settings, setSettings] = useState<RoomSettings>(loadSettings);
+  const [role, setRole] = useState<Role>(initialRole);
+  const [settings, setSettings] = useState<RoomSettings>(() => {
+    const base = loadSettings();
+    return { ...DEFAULT_SETTINGS, ...base, expiresAt: base.expiresAt ?? null };
+  });
   const [railTab, setRailTab] = useState<RailTab | null>(null);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -61,9 +66,13 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
   const [bufferedEnd, setBufferedEnd] = useState(0);
   const [buffering, setBuffering] = useState(false);
   const [ended, setEnded] = useState(false);
+  const [endedMessage, setEndedMessage] = useState(
+    "Session ended. Local film data for this room was cleared on this device. Nothing was stored on Partmov’s servers.",
+  );
   const [passphrase, setPassphrase] = useState("");
   const [passOk, setPassOk] = useState(!passphraseGate);
   const [roomPassphrase, setRoomPassphrase] = useState("");
+  const [expireLeftMs, setExpireLeftMs] = useState<number | null>(null);
 
   const isHost = role === "host";
 
@@ -93,6 +102,7 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
 
   const syncSendRef = useRef<(msg: import("@/lib/sync-protocol").SyncMessage) => void>(() => undefined);
   const subsAddRef = useRef<(label: string, url: string) => void>(() => undefined);
+  const wipeAllRef = useRef<() => void>(() => undefined);
 
   const subs = useSubtitles();
   subsAddRef.current = subs.addTrackFromUrl;
@@ -103,6 +113,26 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
     onSubtitleReceived: (label, url) => subsAddRef.current(label, url),
   });
 
+  const finishSession = useCallback(
+    (_reason: RoomEndReason, message: string) => {
+      wipeAllRef.current();
+      try {
+        sessionStorage.removeItem(`partmov:media:${code}`);
+      } catch {
+        /* ignore */
+      }
+      const v = videoRef.current;
+      if (v) {
+        v.pause();
+        v.removeAttribute("src");
+        v.load();
+      }
+      setEndedMessage(message);
+      setEnded(true);
+    },
+    [code],
+  );
+
   const sync = useRoomSync({
     code,
     role,
@@ -110,7 +140,7 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
     color,
     videoRef,
     settings,
-    onSettingsFromPeer: (s) => setSettings(s),
+    onSettingsFromPeer: (s) => setSettings((prev) => ({ ...prev, ...s })),
     onMediaFromPeer: (m) => media.onMediaFromPeer(m),
     onFileMessage: (msg) => media.handleFileMessage(msg),
     onSubtitleFromPeer: (trackId) => {
@@ -122,10 +152,24 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
         subs.setVisible(true);
       }
     },
-    onRoomEnded: () => setEnded(true),
+    onRoomEnded: (reason, message) => finishSession(reason, message),
+    onBecomeHost: () => {
+      setRole("host");
+      try {
+        sessionStorage.setItem(`partmov:role:${code}`, "host");
+      } catch {
+        /* ignore */
+      }
+    },
   });
 
   syncSendRef.current = sync.send;
+
+  wipeAllRef.current = () => {
+    media.wipeSession();
+    subs.clearTracks();
+    sync.setChat([]);
+  };
 
   // Wire media broadcast helpers to sync seq
   const pickCatalog = useCallback(
@@ -264,18 +308,56 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
   }, [bumpChrome, canSeek, muted, subs, sync, togglePlay, volume]);
 
   function leave() {
+    sync.leaveRoom();
     router.push("/watch");
   }
 
-  function endRoom() {
-    sync.endRoom();
-    setEnded(true);
+  function endSession() {
+    sync.endRoom("ended");
+  }
+
+  function forceEndSession() {
+    sync.endRoom("force");
   }
 
   function updateSettings(next: RoomSettings) {
     setSettings(next);
     if (isHost) sync.broadcastSettings(next);
   }
+
+  function setExpirePreset(ms: number) {
+    const expiresAt = ms <= 0 ? null : Date.now() + ms;
+    const next = { ...settings, expiresAt };
+    setSettings(next);
+    sync.setSessionExpire(expiresAt);
+    if (isHost) sync.broadcastSettings(next);
+  }
+
+  // Session expire countdown
+  useEffect(() => {
+    if (!settings.expiresAt || ended) {
+      setExpireLeftMs(null);
+      return;
+    }
+    const expiresAt = settings.expiresAt;
+    const tick = () => {
+      const left = expiresAt - Date.now();
+      if (left <= 0) {
+        setExpireLeftMs(0);
+        if (isHost) {
+          sync.endRoom("expired");
+        } else {
+          finishSession("expired", "Session expired. Local film data was cleared on each device.");
+        }
+        return;
+      }
+      setExpireLeftMs(left);
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.expiresAt, ended, isHost]);
 
   if (passphraseGate && !passOk) {
     return (
@@ -305,9 +387,9 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
   if (ended) {
     return (
       <div className="cinema-boot">
-        <h1>Room closed</h1>
-        <p>The host ended this private cinema.</p>
-        <button type="button" className="btn btn--primary" onClick={leave}>
+        <h1>Session ended</h1>
+        <p>{endedMessage}</p>
+        <button type="button" className="btn btn--primary" onClick={() => router.push("/watch")}>
           Back to lobby
         </button>
       </div>
@@ -345,6 +427,11 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
             {sync.syncLabel}
             {sync.partnerState === "connected" ? ` · ${sync.driftMs} ms` : ""}
           </span>
+          {expireLeftMs !== null && expireLeftMs > 0 && (
+            <span className="cinema-top__expire" title="Session expires">
+              {Math.floor(expireLeftMs / 60000)}m {Math.floor((expireLeftMs % 60000) / 1000)}s
+            </span>
+          )}
           {isHost && (
             <button type="button" className="btn btn--ghost cinema-top__invite" onClick={() => setInviteOpen(true)}>
               Invite
@@ -514,7 +601,9 @@ export function WatchRoom({ code, role, name, color, initialMediaId, passphraseG
               onChange={updateSettings}
               onClearChat={() => sync.setChat([])}
               onLeave={leave}
-              onEndRoom={isHost ? endRoom : undefined}
+              onEndSession={isHost ? endSession : undefined}
+              onForceEnd={isHost ? forceEndSession : undefined}
+              onExpirePreset={isHost ? setExpirePreset : undefined}
             />
           )}
         </aside>

@@ -18,6 +18,8 @@ export type MediaDescriptor = {
   license?: string;
 };
 
+export type RoomEndReason = "ended" | "force" | "expired";
+
 export type RoomSettings = {
   courtesyPause: boolean;
   syncStrictness: SyncStrictness;
@@ -25,6 +27,8 @@ export type RoomSettings = {
   reduceMotion: boolean;
   joinSound: boolean;
   roomTitle: string;
+  /** Absolute epoch ms when the session auto-ends; null = no timer */
+  expiresAt: number | null;
 };
 
 export const DEFAULT_SETTINGS: RoomSettings = {
@@ -34,7 +38,16 @@ export const DEFAULT_SETTINGS: RoomSettings = {
   reduceMotion: false,
   joinSound: false,
   roomTitle: "",
+  expiresAt: null,
 };
+
+export const EXPIRE_PRESETS_MS = [
+  { label: "Off", ms: 0 },
+  { label: "30 minutes", ms: 30 * 60 * 1000 },
+  { label: "1 hour", ms: 60 * 60 * 1000 },
+  { label: "2 hours", ms: 2 * 60 * 60 * 1000 },
+  { label: "6 hours", ms: 6 * 60 * 60 * 1000 },
+] as const;
 
 export type SyncThresholds = {
   lockMs: number;
@@ -100,7 +113,9 @@ export type SyncMessage =
   | { type: "reaction"; name: string; glyph: string; at: number }
   | { type: "typing"; name: string; on: boolean }
   | { type: "settings_changed"; settings: RoomSettings; seq: number }
-  | { type: "room_ended"; reason: string }
+  | { type: "host_transfer"; newHostName: string; reason: "left" | "handoff"; seq: number }
+  | { type: "session_expire_at"; expiresAt: number | null; seq: number }
+  | { type: "room_ended"; reason: RoomEndReason; message: string }
   | { type: "command_rejected"; reason: string; message: string; seq: number };
 
 export function channelName(code: string): string {

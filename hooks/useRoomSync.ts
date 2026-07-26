@@ -29,7 +29,8 @@ type UseRoomSyncArgs = {
   onMediaFromPeer?: (m: MediaDescriptor) => void;
   onFileMessage?: (msg: SyncMessage) => void;
   onSubtitleFromPeer?: (trackId: string | null) => void;
-  onRoomEnded?: (reason: string) => void;
+  onRoomEnded?: (reason: import("@/lib/sync-protocol").RoomEndReason, message: string) => void;
+  onBecomeHost?: () => void;
 };
 
 export function useRoomSync({
@@ -44,6 +45,7 @@ export function useRoomSync({
   onFileMessage,
   onSubtitleFromPeer,
   onRoomEnded,
+  onBecomeHost,
 }: UseRoomSyncArgs) {
   const isHost = role === "host";
   const peerRef = useRef<Peer | null>(null);
@@ -59,6 +61,11 @@ export function useRoomSync({
   const selfReadyRef = useRef(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const roleRef = useRef(role);
+  roleRef.current = role;
+  const suppressLeaveNotifyRef = useRef(false);
+  const becomingHostRef = useRef(false);
+  const endedRef = useRef(false);
 
   const [partnerName, setPartnerName] = useState<string | null>(null);
   const [partnerColor, setPartnerColor] = useState("#86AB9D");
@@ -254,7 +261,36 @@ export function useRoomSync({
         setPartnerState("waiting");
         setPartnerReady(false);
         partnerReadyRef.current = false;
-        setStatus("Partner left — waiting to reconnect");
+        setPartnerName(null);
+        setStatus(
+          roleRef.current === "host"
+            ? "Partner left — room stays open. Share the invite again anytime."
+            : "Partner left — waiting to reconnect",
+        );
+        return;
+      }
+
+      if (msg.type === "host_transfer") {
+        // We are being promoted to host
+        becomingHostRef.current = true;
+        suppressLeaveNotifyRef.current = true;
+        setPartnerState("waiting");
+        setPartnerReady(false);
+        partnerReadyRef.current = false;
+        setPartnerName(null);
+        setControlMode("host_only");
+        setRemoteHolder("host");
+        setStatus("You are now the host — room stays active");
+        window.setTimeout(() => {
+          onBecomeHost?.();
+          becomingHostRef.current = false;
+        }, 400);
+        return;
+      }
+
+      if (msg.type === "session_expire_at") {
+        seqRef.current = Math.max(seqRef.current, msg.seq);
+        onSettingsFromPeer?.({ ...settingsRef.current, expiresAt: msg.expiresAt });
         return;
       }
 
@@ -311,7 +347,7 @@ export function useRoomSync({
       }
 
       if (msg.type === "seek" || msg.type === "heartbeat") {
-        if (isHost && msg.type === "heartbeat") {
+        if (roleRef.current === "host" && msg.type === "heartbeat") {
           if (
             settingsRef.current.courtesyPause &&
             msg.bufferedAheadMs !== undefined &&
@@ -363,7 +399,7 @@ export function useRoomSync({
       }
 
       if (msg.type === "control_request") {
-        if (isHost) setControlRequested(true);
+        if (roleRef.current === "host") setControlRequested(true);
         setStatus(`${msg.name} asked for the remote`);
         return;
       }
@@ -397,8 +433,10 @@ export function useRoomSync({
       }
 
       if (msg.type === "room_ended") {
-        onRoomEnded?.(msg.reason);
-        setStatus(`Room ended — ${msg.reason}`);
+        if (endedRef.current) return;
+        endedRef.current = true;
+        onRoomEnded?.(msg.reason, msg.message);
+        setStatus(msg.message);
         return;
       }
 
@@ -416,6 +454,7 @@ export function useRoomSync({
       onFileMessage,
       onMediaFromPeer,
       onRoomEnded,
+      onBecomeHost,
       onSettingsFromPeer,
       onSubtitleFromPeer,
       playState,
@@ -476,33 +515,37 @@ export function useRoomSync({
       connRef.current = conn;
       conn.on("open", () => {
         setPartnerState("connected");
-        send({ type: "hello", role, name, color });
+        send({ type: "hello", role: roleRef.current, name, color });
       });
       conn.on("data", (data) => onMessage(data as SyncMessage));
       conn.on("close", () => {
+        if (endedRef.current || becomingHostRef.current) return;
         setPartnerState("reconnecting");
         setStatus("Connection dropped — trying to recover");
       });
     }
 
     void connect();
-    const t = window.setTimeout(() => send({ type: "hello", role, name, color }), 250);
+    const t = window.setTimeout(() => send({ type: "hello", role: roleRef.current, name, color }), 250);
 
     return () => {
       cancelled = true;
       window.clearTimeout(t);
-      try {
-        send({ type: "partner_left" });
-      } catch {
-        /* ignore */
+      if (!suppressLeaveNotifyRef.current && !endedRef.current) {
+        try {
+          send({ type: "partner_left" });
+        } catch {
+          /* ignore */
+        }
       }
+      suppressLeaveNotifyRef.current = false;
       connRef.current?.close();
       peerRef.current?.destroy();
       connRef.current = null;
       peerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, isHost, name, role, color]);
+  }, [code, isHost, name, color]);
 
   // Clock pings
   useEffect(() => {
@@ -658,9 +701,54 @@ export function useRoomSync({
     [send],
   );
 
-  const endRoom = useCallback(() => {
-    send({ type: "room_ended", reason: "host closed the room" });
-  }, [send]);
+  const endRoom = useCallback(
+    (reason: import("@/lib/sync-protocol").RoomEndReason = "ended") => {
+      const message =
+        reason === "force"
+          ? "Session force-ended. Local film data was cleared on each device."
+          : reason === "expired"
+            ? "Session expired. Local film data was cleared on each device."
+            : "Session ended. Local film data was cleared on each device.";
+      endedRef.current = true;
+      send({ type: "room_ended", reason, message });
+      onRoomEnded?.(reason, message);
+    },
+    [onRoomEnded, send],
+  );
+
+  const setSessionExpire = useCallback(
+    (expiresAt: number | null) => {
+      send({ type: "session_expire_at", expiresAt, seq: ++seqRef.current });
+      onSettingsFromPeer?.({ ...settingsRef.current, expiresAt });
+    },
+    [onSettingsFromPeer, send],
+  );
+
+  /** Leave without destroying the room. Host transfers to the partner when connected. */
+  const leaveRoom = useCallback(() => {
+    if (endedRef.current) return;
+    if (roleRef.current === "host" && partnerState === "connected" && partnerName) {
+      send({
+        type: "host_transfer",
+        newHostName: partnerName,
+        reason: "left",
+        seq: ++seqRef.current,
+      });
+      send({ type: "partner_left" });
+      suppressLeaveNotifyRef.current = true;
+      connRef.current?.close();
+      peerRef.current?.destroy();
+      connRef.current = null;
+      peerRef.current = null;
+      return;
+    }
+    send({ type: "partner_left" });
+    suppressLeaveNotifyRef.current = true;
+    connRef.current?.close();
+    peerRef.current?.destroy();
+    connRef.current = null;
+    peerRef.current = null;
+  }, [partnerName, partnerState, send]);
 
   const sendChat = useCallback(
     (body: string) => {
@@ -747,6 +835,8 @@ export function useRoomSync({
     broadcastMedia,
     broadcastSettings,
     endRoom,
+    leaveRoom,
+    setSessionExpire,
     sendChat,
     sendReaction,
     sendTyping,
