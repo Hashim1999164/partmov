@@ -60,16 +60,44 @@ npm run build   # production build
 npm start       # serve the production build
 ```
 
+## Streaming V2 (self-hosted ABR)
+
+The adaptive pipeline lives under `services/` and `infra/` — **not** on Vercel.
+
+```bash
+cp .env.streaming.example .env
+npm run streaming:deps      # Postgres, Valkey, MinIO
+npm run streaming:migrate
+npm run streaming:api &     # :8080
+npm run streaming:sync &    # :8090
+npm run streaming:worker &  # FFmpeg (requires ffmpeg on PATH)
+# optional full compose: npm run streaming:stack
+```
+
+Enable the client path only after acceptance gates in `scripts/tests/` and `docs/ops/RUNBOOK.md`:
+
+```bash
+NEXT_PUBLIC_STREAMING_V2=true
+NEXT_PUBLIC_API_BASE=http://127.0.0.1:8080
+NEXT_PUBLIC_SYNC_WS=ws://127.0.0.1:8090/ws
+```
+
+Open `/watch/<code>?roomId=<uuid>&token=<invite>` for authoritative sync + hls.js. Without the flag, the PeerJS/catalog demo remains the default.
+
 ## Repository layout
 
 ```
-app/            Next.js App Router pages, one per blueprint chapter
-components/     Shared UI: nav, primitives, architecture diagram, sync visualisation
-docs/           BLUEPRINT.md — the full engineering specification
+app/                 Next.js UI (Vercel-safe)
+components/watch/    Cinema room UI + StreamingWatchRoom
+hooks/               useRoomSync (demo), useAuthoritativeSync, useAdaptivePlayer
+packages/protocol/   Shared sync/media types
+services/api|sync|worker
+infra/compose|nginx|ansible|observability
+docs/BLUEPRINT.md + docs/ops/
+scripts/tests|load
 ```
 
 ## Note on scope
 
-This project is the design artefact. The runtime stack it describes (MinIO, FFmpeg workers,
-PostgreSQL, a long-lived WebSocket authority) is intended to run under Docker Compose on a
-machine you control, not on a serverless host.
+Movie ingestion, transcoding, private delivery, and authoritative sync run on self-hosted OSS
+infrastructure. Vercel only serves the Next.js UI.

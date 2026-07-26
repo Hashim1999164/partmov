@@ -23,6 +23,8 @@ import { PeoplePanel } from "./PeoplePanel";
 import { ChatRail } from "./ChatRail";
 import { SettingsPanel } from "./SettingsPanel";
 import { InviteSheet } from "./InviteSheet";
+import { useAdaptivePlayer } from "@/hooks/useAdaptivePlayer";
+import { fetchPlaybackUrl, refreshPlaybackUrl, streamingV2Enabled } from "@/lib/streaming";
 
 type RailTab = "chat" | "people" | "media" | "settings";
 
@@ -33,6 +35,9 @@ type Props = {
   color: string;
   initialMediaId?: string | null;
   passphraseGate?: string;
+  /** Streaming V2 server room UUID */
+  serverRoomId?: string;
+  inviteToken?: string;
 };
 
 function loadSettings(): RoomSettings {
@@ -46,13 +51,25 @@ function loadSettings(): RoomSettings {
   return DEFAULT_SETTINGS;
 }
 
-export function WatchRoom({ code, role: initialRole, name, color, initialMediaId, passphraseGate }: Props) {
+export function WatchRoom({
+  code,
+  role: initialRole,
+  name,
+  color,
+  initialMediaId,
+  passphraseGate,
+  serverRoomId,
+  inviteToken,
+}: Props) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const idleTimer = useRef<number | null>(null);
 
   const [role, setRole] = useState<Role>(initialRole);
+  const [playbackToken, setPlaybackToken] = useState<string | null>(null);
+  const [tokenExpiresAt, setTokenExpiresAt] = useState<number | null>(null);
+  const [hlsSrc, setHlsSrc] = useState<string | null>(null);
   const [settings, setSettings] = useState<RoomSettings>(() => {
     const base = loadSettings();
     return { ...DEFAULT_SETTINGS, ...base, expiresAt: base.expiresAt ?? null };
@@ -111,6 +128,61 @@ export function WatchRoom({ code, role: initialRole, name, color, initialMediaId
     initial: initialMedia,
     send: (msg) => syncSendRef.current(msg),
     onSubtitleReceived: (label, url) => subsAddRef.current(label, url),
+  });
+
+  const useHls =
+    streamingV2Enabled &&
+    (Boolean(hlsSrc) || media.media?.kind === "hls" || Boolean(media.media?.masterPlaylistUrl));
+
+  const refreshToken = useCallback(async () => {
+    if (!serverRoomId) return;
+    try {
+      const data = await refreshPlaybackUrl(serverRoomId, { inviteToken });
+      setPlaybackToken(data.token);
+      setTokenExpiresAt(Date.parse(data.expiresAt));
+      setHlsSrc(data.masterPlaylistUrl);
+    } catch (err) {
+      console.warn("token refresh failed", err);
+    }
+  }, [serverRoomId, inviteToken]);
+
+  useEffect(() => {
+    if (!streamingV2Enabled || !serverRoomId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await fetchPlaybackUrl(serverRoomId, { inviteToken });
+        if (cancelled) return;
+        setPlaybackToken(data.token);
+        setTokenExpiresAt(Date.parse(data.expiresAt));
+        setHlsSrc(data.masterPlaylistUrl);
+        media.onMediaFromPeer({
+          kind: "hls",
+          title: media.media?.title || "Stream",
+          assetId: undefined,
+          masterPlaylistUrl: data.masterPlaylistUrl,
+          playbackSessionId: data.playbackSessionId,
+          availableLevels: data.levels,
+          poster: media.media?.poster,
+        });
+      } catch (err) {
+        console.warn("playback-url failed", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverRoomId, inviteToken]);
+
+  const adaptive = useAdaptivePlayer({
+    videoRef,
+    src: useHls ? hlsSrc || media.media?.masterPlaylistUrl || null : null,
+    token: playbackToken,
+    tokenExpiresAt,
+    onTokenExpiring: refreshToken,
+    enabled: useHls,
+    startLevel: 0,
   });
 
   const finishSession = useCallback(
@@ -444,14 +516,15 @@ export function WatchRoom({ code, role: initialRole, name, color, initialMediaId
         <div className="cinema-main" ref={stageRef}>
           <CinemaStage
             videoRef={videoRef}
-            src={media.videoSrc}
+            src={useHls ? undefined : media.videoSrc}
+            hlsManaged={useHls}
             poster={media.poster}
             tracks={subs.tracks}
             activeTrackId={subs.activeId}
             subtitleVisible={subs.visible}
             subtitleStyle={subs.style}
             countdown={sync.countdown}
-            buffering={buffering}
+            buffering={buffering || (useHls && !adaptive.ready)}
             waitingPartner={sync.partnerState !== "connected" && isHost}
             partnerName={sync.partnerName}
             reactions={sync.reactions}
@@ -535,6 +608,9 @@ export function WatchRoom({ code, role: initialRole, name, color, initialMediaId
             }}
             onOpenSubtitles={() => setSubsOpen(true)}
             captionsOn={subs.visible && Boolean(subs.activeId)}
+            qualityLevels={useHls ? adaptive.levels.map((l) => ({ index: l.index, label: l.label })) : undefined}
+            qualityValue={useHls ? (adaptive.autoLevel ? "auto" : adaptive.currentLevel) : "auto"}
+            onQuality={useHls ? adaptive.setQuality : undefined}
           />
         </div>
 

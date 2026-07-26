@@ -6,7 +6,7 @@ export type SyncStrictness = "relaxed" | "normal" | "strict";
 
 export type PartnerState = "waiting" | "connecting" | "connected" | "reconnecting" | "left";
 
-export type MediaKind = "catalog" | "url" | "file";
+export type MediaKind = "catalog" | "url" | "file" | "hls";
 
 export type MediaDescriptor = {
   kind: MediaKind;
@@ -16,6 +16,12 @@ export type MediaDescriptor = {
   poster?: string;
   credit?: string;
   license?: string;
+  /** Streaming V2 — never distribute raw movie URLs in production */
+  assetId?: string;
+  masterPlaylistUrl?: string;
+  playbackSessionId?: string;
+  durationMs?: number;
+  availableLevels?: Array<{ height: number; bandwidth: number; label: string }>;
 };
 
 export type RoomEndReason = "ended" | "force" | "expired";

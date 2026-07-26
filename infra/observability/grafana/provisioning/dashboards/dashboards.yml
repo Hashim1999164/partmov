@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: partmov
+    folder: Partmov
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

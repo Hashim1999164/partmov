@@ -2,13 +2,32 @@
   "name": "partmov",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck -w @partmov/protocol -w @partmov/api -w @partmov/sync -w @partmov/worker",
+    "streaming:deps": "docker compose -f infra/compose/docker-compose.yml up -d postgres valkey minio createbuckets",
+    "streaming:stack": "docker compose -f infra/compose/docker-compose.yml --profile stack up -d --build",
+    "streaming:obs": "docker compose -f infra/compose/docker-compose.yml --profile obs up -d",
+    "streaming:migrate": "npm run migrate -w @partmov/api",
+    "streaming:api": "npm run dev -w @partmov/api",
+    "streaming:sync": "npm run dev -w @partmov/sync",
+    "streaming:worker": "npm run dev -w @partmov/worker",
+    "test:unit": "node --import tsx --test scripts/tests/unit/*.test.ts",
+    "test:golden": "node --import tsx scripts/tests/golden-media.ts",
+    "test:fault": "node --import tsx scripts/tests/fault-injection.ts",
+    "test:gates": "npm run test:unit && npm run test:golden && npm run test:fault && npm run test:load",
+    "test:load": "node scripts/load/k6-smoke.js"
   },
   "dependencies": {
+    "@partmov/protocol": "0.1.0",
+    "hls.js": "^1.6.2",
     "next": "^16.2.12",
     "peerjs": "^1.5.5",
     "react": "19.1.1",
@@ -19,6 +38,7 @@
     "@types/peerjs": "^0.0.30",
     "@types/react": "19.1.8",
     "@types/react-dom": "19.1.6",
+    "tsx": "^4.19.3",
     "typescript": "5.8.3"
   }
 }

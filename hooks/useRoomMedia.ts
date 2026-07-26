@@ -81,7 +81,10 @@ export function useRoomMedia({
       setMedia(next);
       setMediaError(null);
       let src = srcOverride ?? next.src ?? "";
-      if (next.kind === "catalog" && next.id) {
+      if (next.kind === "hls") {
+        src = next.masterPlaylistUrl ?? src;
+        if (next.poster) setPoster(next.poster);
+      } else if (next.kind === "catalog" && next.id) {
         const film = getCatalogFilm(next.id);
         if (film) {
           src = srcOverride ?? film.src;

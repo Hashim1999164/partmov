@@ -1,0 +1,4 @@
+---
+- name: Transcode node placeholder
+  debug:
+    msg: "Install FFmpeg, pin WORKER_CONCURRENCY to CPU cores - 1, isolate cpuset for encode jobs"

@@ -1,0 +1,11 @@
+---
+- name: Install base packages
+  apt:
+    name: [curl, ca-certificates, htop, fail2ban, unattended-upgrades]
+    state: present
+    update_cache: true
+
+- name: Ensure Docker is available
+  apt:
+    name: [docker.io, docker-compose-v2]
+    state: present

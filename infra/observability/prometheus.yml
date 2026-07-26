@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: partmov-api
+    static_configs:
+      - targets: ["api:8080"]
+    metrics_path: /metrics
+  - job_name: partmov-sync
+    static_configs:
+      - targets: ["sync:8090"]
+    metrics_path: /metrics
+  - job_name: partmov-worker
+    static_configs:
+      - targets: ["worker:8091"]
+    metrics_path: /metrics
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

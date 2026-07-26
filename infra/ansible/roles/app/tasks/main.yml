@@ -1,0 +1,8 @@
+---
+- name: Deploy app stack compose profile
+  copy:
+    src: "{{ playbook_dir }}/../../compose/docker-compose.yml"
+    dest: /opt/partmov/docker-compose.yml
+- name: Reminder
+  debug:
+    msg: "Configure Caddy reverse proxy for api/sync; set MEDIA_HMAC_SECRET and SESSION_HMAC_SECRET"

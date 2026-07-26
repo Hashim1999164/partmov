@@ -1,0 +1,24 @@
+{
+  "name": "@partmov/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --import tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.787.0",
+    "@aws-sdk/lib-storage": "^3.787.0",
+    "@partmov/protocol": "0.1.0",
+    "ioredis": "^5.6.1",
+    "pg": "^8.14.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "@types/pg": "^8.11.13",
+    "tsx": "^4.19.3",
+    "typescript": "5.8.3"
+  }
+}

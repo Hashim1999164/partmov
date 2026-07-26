@@ -5,8 +5,11 @@ import type { SubtitleStyle, SubtitleTrackInfo } from "@/lib/sync-protocol";
 
 type Props = {
   videoRef: RefObject<HTMLVideoElement | null>;
-  src: string;
+  /** Progressive MP4/blob URL. Omit when hls.js owns the media element. */
+  src?: string;
   poster?: string;
+  /** When true, do not set the video src attribute (adaptive player attaches). */
+  hlsManaged?: boolean;
   tracks: SubtitleTrackInfo[];
   activeTrackId: string | null;
   subtitleVisible: boolean;
@@ -28,6 +31,7 @@ export function CinemaStage({
   videoRef,
   src,
   poster,
+  hlsManaged = false,
   tracks,
   activeTrackId,
   subtitleVisible,
@@ -56,7 +60,7 @@ export function CinemaStage({
       <video
         ref={videoRef}
         className="cinema-stage__video"
-        src={src}
+        {...(hlsManaged ? {} : { src })}
         poster={poster}
         playsInline
         preload="auto"

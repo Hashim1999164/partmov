@@ -23,6 +23,10 @@ type Props = {
   onRate: (r: number) => void;
   onOpenSubtitles: () => void;
   captionsOn: boolean;
+  /** Adaptive quality (Streaming V2). undefined hides control. */
+  qualityLevels?: Array<{ index: number; label: string }>;
+  qualityValue?: number | "auto";
+  onQuality?: (level: number | "auto") => void;
 };
 
 const RATES = [0.75, 1, 1.25, 1.5, 2];
@@ -48,6 +52,9 @@ export function ControlStrip({
   onRate,
   onOpenSubtitles,
   captionsOn,
+  qualityLevels,
+  qualityValue = "auto",
+  onQuality,
 }: Props) {
   const pct = duration > 0 ? (position / duration) * 100 : 0;
   const buf = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
@@ -117,6 +124,24 @@ export function ControlStrip({
             aria-label="Volume"
             onChange={(e) => onVolume(Number(e.target.value))}
           />
+          {qualityLevels && qualityLevels.length > 0 && onQuality && (
+            <select
+              className="control-strip__select"
+              value={qualityValue === "auto" ? "auto" : String(qualityValue)}
+              aria-label="Quality"
+              onChange={(e) => {
+                const v = e.target.value;
+                onQuality(v === "auto" ? "auto" : Number(v));
+              }}
+            >
+              <option value="auto">Auto</option>
+              {qualityLevels.map((l) => (
+                <option key={l.index} value={l.index}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             className="control-strip__select"
             value={rate}

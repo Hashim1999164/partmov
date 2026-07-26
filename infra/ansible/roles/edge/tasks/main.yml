@@ -1,0 +1,4 @@
+---
+- name: Edge node placeholder
+  debug:
+    msg: "Deploy nginx media-edge.conf; size proxy_cache to disk; provision >500Mbps egress per edge"

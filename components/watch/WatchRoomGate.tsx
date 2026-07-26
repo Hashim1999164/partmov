@@ -5,12 +5,16 @@ import { useSearchParams } from "next/navigation";
 import { normalizeRoomCode } from "@/lib/catalog";
 import { COLOR_CHIPS, type Role } from "@/lib/sync-protocol";
 import { WatchRoom } from "./WatchRoom";
+import { StreamingWatchRoom } from "./StreamingWatchRoom";
+import { streamingV2Enabled } from "@/lib/streaming";
 
 export function WatchRoomGate({ code: rawCode }: { code: string }) {
   const params = useSearchParams();
   const code = normalizeRoomCode(rawCode);
   const asGuest = params.get("as") === "guest";
   const gate = params.get("gate") || undefined;
+  const roomId = params.get("roomId") || undefined;
+  const inviteToken = params.get("token") || undefined;
 
   const [ready, setReady] = useState(false);
   const [role, setRole] = useState<Role>("host");
@@ -60,6 +64,18 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
     );
   }
 
+  if (streamingV2Enabled && roomId) {
+    return (
+      <StreamingWatchRoom
+        code={code}
+        roomId={roomId}
+        name={name}
+        color={color}
+        inviteToken={inviteToken}
+      />
+    );
+  }
+
   return (
     <WatchRoom
       code={code}
@@ -68,6 +84,8 @@ export function WatchRoomGate({ code: rawCode }: { code: string }) {
       color={color}
       initialMediaId={mediaId}
       passphraseGate={gate}
+      serverRoomId={roomId}
+      inviteToken={inviteToken}
     />
   );
 }

@@ -25,6 +25,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@partmov/protocol": [
+        "./packages/protocol/src/index.ts"
       ]
     }
   },

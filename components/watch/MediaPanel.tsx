@@ -122,6 +122,13 @@ export function MediaPanel({
       )}
 
       {error && <p className="rail-panel__error">{error}</p>}
+
+      <div className="rail-panel__fallback">
+        <p className="rail-panel__muted">
+          Local file / PeerJS transfer remains the demo fallback. Production ABR HLS requires Streaming V2
+          (`NEXT_PUBLIC_STREAMING_V2=true`) and the self-hosted API worker stack.
+        </p>
+      </div>
     </div>
   );
 }

@@ -1,0 +1,4 @@
+---
+- name: Media node placeholder
+  debug:
+    msg: "Provision PostgreSQL 16 + PgBouncer + MinIO; attach volume for originals/renditions; enable nightly pg_dump"

@@ -1,0 +1,31 @@
+---
+# Partmov VPS roles — App / Media / Transcode / Edge
+- name: Partmov base
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: App VPS (API + Sync + Valkey + Caddy)
+  hosts: app
+  become: true
+  roles:
+    - app
+
+- name: Media/storage VPS (MinIO + PostgreSQL)
+  hosts: media
+  become: true
+  roles:
+    - media
+
+- name: Transcode VPS (FFmpeg workers)
+  hosts: transcode
+  become: true
+  roles:
+    - transcode
+
+- name: Media edge (nginx cache)
+  hosts: edge
+  become: true
+  roles:
+    - edge

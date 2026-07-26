@@ -1,0 +1,44 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "API up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "partmov_api_up", "refId": "A" }]
+    },
+    {
+      "title": "Sync rooms",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "partmov_sync_rooms", "refId": "A" }]
+    },
+    {
+      "title": "Worker active jobs",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "partmov_worker_active_jobs", "refId": "A" }]
+    },
+    {
+      "title": "Transcode outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "rate(partmov_worker_jobs_succeeded_total[5m])", "legendFormat": "succeeded", "refId": "A" },
+        { "expr": "rate(partmov_worker_jobs_failed_total[5m])", "legendFormat": "failed", "refId": "B" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["partmov", "slo"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Partmov Streaming SLOs",
+  "uid": "partmov-slo",
+  "version": 1
+}
