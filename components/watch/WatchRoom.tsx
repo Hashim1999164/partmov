@@ -29,6 +29,7 @@ import { InviteSheet } from "./InviteSheet";
 import { TransferDock } from "./TransferDock";
 import { SessionToast } from "./SessionToast";
 import { useAdaptivePlayer } from "@/hooks/useAdaptivePlayer";
+import { useWindowedR2Player } from "@/hooks/useWindowedR2Player";
 import { fetchPlaybackUrl, refreshPlaybackUrl, streamingV2Enabled } from "@/lib/streaming";
 import { clearPendingMedia, getPendingMedia } from "@/lib/pending-media";
 import { clearRoomEnded, markRoomEnded } from "@/lib/session-storage";
@@ -170,6 +171,13 @@ export function WatchRoom({
   const useHls =
     streamingV2Enabled &&
     (Boolean(hlsSrc) || media.media?.kind === "hls" || Boolean(media.media?.masterPlaylistUrl));
+
+  const windowed = useWindowedR2Player({
+    videoRef,
+    code,
+    objectKey: media.media?.kind === "r2" ? media.media.objectKey : null,
+    enabled: media.media?.kind === "r2" && !useHls,
+  });
 
   const refreshToken = useCallback(async () => {
     if (!serverRoomId) return;
@@ -435,6 +443,21 @@ export function WatchRoom({
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+    const atEnd =
+      video.ended ||
+      (Number.isFinite(video.duration) &&
+        video.duration > 0 &&
+        video.paused &&
+        video.currentTime >= video.duration - 0.35);
+
+    if (atEnd) {
+      if (!canPlay && !canSeek) return;
+      if (canSeek) sync.seekTo(0);
+      else video.currentTime = 0;
+      if (canPlay) sync.requestPlayTogether();
+      return;
+    }
+
     if (!video.paused) {
       if (!canPause) return;
       sync.broadcastPause();
@@ -442,7 +465,7 @@ export function WatchRoom({
     }
     if (!canPlay) return;
     sync.requestPlayTogether();
-  }, [canPause, canPlay, sync]);
+  }, [canPause, canPlay, canSeek, sync]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -698,15 +721,25 @@ export function WatchRoom({
           ) : (
             <CinemaStage
               videoRef={videoRef}
-              src={useHls ? undefined : media.videoSrc || undefined}
-              hlsManaged={useHls}
+              src={
+                useHls
+                  ? undefined
+                  : windowed.fallbackSrc ||
+                    (media.media?.kind === "r2" && windowed.active ? undefined : media.videoSrc) ||
+                    undefined
+              }
+              hlsManaged={useHls || (media.media?.kind === "r2" && windowed.active && !windowed.fallbackSrc)}
               poster={media.poster}
               tracks={subs.tracks}
               activeTrackId={subs.activeId}
               subtitleVisible={subs.visible}
               subtitleStyle={subs.style}
               countdown={sync.countdown}
-              buffering={buffering || (useHls && !adaptive.ready)}
+              buffering={
+                buffering ||
+                (useHls && !adaptive.ready) ||
+                (media.media?.kind === "r2" && !windowed.ready && !windowed.error && !windowed.fallbackSrc)
+              }
               waitingPartner={sync.partnerState !== "connected" && isHost}
               partnerName={sync.partnerName}
               waitingMedia={!media.hasPlayableMedia && !useHls}
@@ -735,6 +768,15 @@ export function WatchRoom({
               }}
               onPause={() => {
                 if (!sync.applyingRef.current) sync.setPlayState("paused");
+              }}
+              onEnded={() => {
+                if (sync.applyingRef.current) return;
+                sync.setPlayState("paused");
+                const v = videoRef.current;
+                if (v && Number.isFinite(v.duration) && v.duration > 0) {
+                  sync.setDuration(v.duration);
+                  sync.setPosition(v.duration);
+                }
               }}
               onError={media.onVideoError}
               onClickStage={togglePlay}

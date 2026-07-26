@@ -26,6 +26,7 @@ type Props = {
   onLoadedMetadata: () => void;
   onPlay: () => void;
   onPause: () => void;
+  onEnded?: () => void;
   onError: () => void;
   onClickStage: () => void;
 };
@@ -51,6 +52,7 @@ export function CinemaStage({
   onLoadedMetadata,
   onPlay,
   onPause,
+  onEnded,
   onError,
   onClickStage,
 }: Props) {
@@ -75,6 +77,7 @@ export function CinemaStage({
         onLoadedMetadata={onLoadedMetadata}
         onPlay={onPlay}
         onPause={onPause}
+        onEnded={onEnded}
         onError={onError}
         onClick={(e) => e.stopPropagation()}
       >

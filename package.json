@@ -31,6 +31,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1095.0",
     "@partmov/protocol": "0.1.0",
     "hls.js": "^1.6.2",
+    "mp4box": "^0.5.4",
     "next": "^16.2.12",
     "peerjs": "^1.5.5",
     "qrcode": "^1.5.4",

@@ -174,7 +174,6 @@ export function useRoomMedia({
         setMediaError("Missing cloud film reference");
         return;
       }
-      const { fetchR2PlaybackUrl } = await import("@/lib/r2-client");
       setChangingTitle(desc.title);
       onChanging?.(desc.title);
       setTransfer({
@@ -188,7 +187,6 @@ export function useRoomMedia({
         startedAt: Date.now(),
       });
       try {
-        const signed = await fetchR2PlaybackUrl(code, desc.objectKey);
         const next: MediaDescriptor = {
           ...desc,
           kind: "r2",
@@ -197,7 +195,8 @@ export function useRoomMedia({
         revokeAllExcept(null);
         heldVideoRef.current = null;
         activeBlobRef.current = null;
-        applyDescriptor(next, signed.url);
+        // Windowed MSE player attaches to the <video>; no full-file progressive URL.
+        applyDescriptor(next, "");
         setTransfer(null);
         if (opts?.broadcast) {
           send({
@@ -673,8 +672,8 @@ export function useRoomMedia({
   }, [media]);
 
   const onVideoError = useCallback(() => {
-    if (media?.kind === "r2" && media.objectKey && code) {
-      void applyR2Film(media, { broadcast: false });
+    if (media?.kind === "r2") {
+      setMediaError("Cloud stream stalled — try seeking or reloading the film");
       return;
     }
     if (!media || media.kind !== "catalog" || !media.id) {
@@ -688,16 +687,7 @@ export function useRoomMedia({
       return;
     }
     setMediaError("Could not load this film");
-  }, [applyR2Film, code, media, videoSrc]);
-
-  // Refresh signed R2 URLs before they expire (~2h).
-  useEffect(() => {
-    if (media?.kind !== "r2" || !media.objectKey || !code) return;
-    const id = window.setInterval(() => {
-      void applyR2Film(media, { broadcast: false });
-    }, 90 * 60 * 1000);
-    return () => window.clearInterval(id);
-  }, [applyR2Film, code, media]);
+  }, [media, videoSrc]);
 
   const wipeSession = useCallback(() => {
     revokeAllExcept(null);
@@ -743,6 +733,7 @@ export function useRoomMedia({
     wipeSession,
     reofferHeldVideo,
     currentMediaForWelcome,
-    hasPlayableMedia: Boolean(videoSrc) || media?.kind === "browse",
+    hasPlayableMedia:
+      Boolean(videoSrc) || media?.kind === "browse" || (media?.kind === "r2" && Boolean(media.objectKey)),
   };
 }

@@ -118,6 +118,7 @@ export function StreamingWatchRoom({ code, roomId, name, color, inviteToken }: P
   const canPlay = sync.can("play");
   const canSeek = sync.can("seek");
   const canRate = sync.can("rate");
+  const canPause = sync.can("pause");
 
   return (
     <div className="cinema">
@@ -191,8 +192,24 @@ export function StreamingWatchRoom({ code, roomId, name, color, inviteToken }: P
             onTogglePlay={() => {
               const v = videoRef.current;
               if (!v) return;
-              if (v.paused) sync.play(v.currentTime);
-              else sync.pause(v.currentTime);
+              const atEnd =
+                v.ended ||
+                (Number.isFinite(v.duration) &&
+                  v.duration > 0 &&
+                  v.paused &&
+                  v.currentTime >= v.duration - 0.35);
+              if (atEnd) {
+                if (!canSeek && !canPlay) return;
+                if (canSeek) sync.seek(0);
+                else v.currentTime = 0;
+                if (canPlay) sync.play(0);
+                return;
+              }
+              if (v.paused) {
+                if (canPlay) sync.play(v.currentTime);
+              } else if (canPause) {
+                sync.pause(v.currentTime);
+              }
             }}
             onSeek={(t) => canSeek && sync.seek(t)}
             onSkip={(d) => {

@@ -204,6 +204,45 @@ export async function signPlaybackUrl(objectKey: string, expiresInSec = 2 * 60 *
   return { url, expiresAt: Date.now() + expiresInSec * 1000 };
 }
 
+/** Byte-range fetch for windowed MSE streaming (inclusive start/end). */
+export async function getObjectRange(objectKey: string, start: number, end: number) {
+  const client = r2Client();
+  const res = await client.send(
+    new GetObjectCommand({
+      Bucket: originalsBucket(),
+      Key: objectKey,
+      Range: `bytes=${start}-${end}`,
+    }),
+  );
+  const body = res.Body;
+  if (!body) throw new Error("Empty R2 range body");
+  const bytes = await body.transformToByteArray();
+  return {
+    bytes: Buffer.from(bytes),
+    contentLength: res.ContentLength || bytes.byteLength,
+    contentRange: res.ContentRange || `bytes ${start}-${end}/*`,
+    contentType: res.ContentType || "video/mp4",
+    totalSize: parseTotalFromContentRange(res.ContentRange) ?? undefined,
+  };
+}
+
+function parseTotalFromContentRange(range?: string) {
+  if (!range) return null;
+  const m = /\/(\d+)$/.exec(range);
+  return m ? Number(m[1]) : null;
+}
+
+export async function headObjectSize(objectKey: string) {
+  const client = r2Client();
+  const head = await client.send(
+    new HeadObjectCommand({ Bucket: originalsBucket(), Key: objectKey }),
+  );
+  return {
+    size: head.ContentLength || 0,
+    contentType: head.ContentType || "video/mp4",
+  };
+}
+
 export async function purgeRoomPrefix(code: string) {
   const client = r2Client();
   const bucket = originalsBucket();

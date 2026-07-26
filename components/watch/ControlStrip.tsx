@@ -58,6 +58,7 @@ export function ControlStrip({
 }: Props) {
   const pct = duration > 0 ? (position / duration) * 100 : 0;
   const buf = duration > 0 ? (bufferedEnd / duration) * 100 : 0;
+  const finished = duration > 0 && !playing && position >= Math.max(0, duration - 0.35);
 
   return (
     <div className="control-strip" onClick={(e) => e.stopPropagation()}>
@@ -69,7 +70,7 @@ export function ControlStrip({
           min={0}
           max={duration || 0}
           step={0.1}
-          value={position}
+          value={Math.min(position, duration || 0)}
           disabled={!canSeek || !duration}
           aria-label="Seek"
           onChange={(e) => onSeek(Number(e.target.value))}
@@ -90,11 +91,12 @@ export function ControlStrip({
           <button
             type="button"
             className="control-strip__btn"
-            disabled={!canPlay && !playing}
+            disabled={!canPlay && !playing && !finished}
             onClick={onTogglePlay}
-            aria-label={playing ? "Pause" : "Play"}
+            aria-label={finished ? "Replay" : playing ? "Pause" : "Play"}
+            title={finished ? "Replay" : playing ? "Pause" : "Play"}
           >
-            {playing ? "❚❚" : "▶"}
+            {finished ? "↻" : playing ? "❚❚" : "▶"}
           </button>
           <button
             type="button"
