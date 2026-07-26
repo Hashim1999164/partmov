@@ -52,13 +52,26 @@ export function originalsBucket() {
 }
 
 export function roomObjectKey(code: string, assetId: string, fileName: string) {
-  const safe = fileName.replace(/[^\w.\-()+ ]+/g, "_").slice(0, 180) || "film.mp4";
+  // Keep keys URL-safe and free of ".." so path checks don't false-positive on "file....mp4".
+  const safe =
+    fileName
+      .replace(/\.\.+/g, ".")
+      .replace(/[^\w.\-]+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^\.+|\.+$/g, "")
+      .slice(0, 180) || "film.mp4";
   return `rooms/${code}/${assetId}/${safe}`;
 }
 
 export function assertRoomKey(code: string, objectKey: string) {
   const prefix = `rooms/${code}/`;
-  if (!objectKey.startsWith(prefix) || objectKey.includes("..")) {
+  // Reject path traversal segment `/../` or leading `..`, not filenames like `film....mp4`.
+  const traversal =
+    objectKey.includes("/../") ||
+    objectKey.includes("/..") ||
+    objectKey.startsWith("..") ||
+    objectKey.includes("../");
+  if (!objectKey.startsWith(prefix) || traversal) {
     throw new Error("Invalid object key for this room");
   }
 }
