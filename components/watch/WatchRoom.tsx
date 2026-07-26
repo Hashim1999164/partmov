@@ -419,7 +419,11 @@ export function WatchRoom({ code, role, name }: Props) {
             <div className="room__bar">
               <span className="room__who">
                 <span className={`dot${isHost ? " dot--copper" : ""}`} aria-hidden="true" />
-                {isHost ? `${name} holds the remote` : `${partnerName ?? "Host"} holds the remote`}
+                {isHost
+                  ? name.toLowerCase() === "you"
+                    ? "You hold the remote"
+                    : `${name} holds the remote`
+                  : `${partnerName ?? "Host"} holds the remote`}
               </span>
               <span className="room__who">
                 <span className={`dot${partnerState === "connected" ? "" : " dot--copper"}`} aria-hidden="true" />
