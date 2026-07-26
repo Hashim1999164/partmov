@@ -72,7 +72,8 @@ export function CinemaStage({
         poster={poster}
         playsInline
         preload="auto"
-        crossOrigin="anonymous"
+        // Same-origin R2 proxy + blob subtitle URLs — anonymous CORS only when needed.
+        crossOrigin={src && !src.startsWith("blob:") && !src.startsWith("/") ? "anonymous" : undefined}
         onTimeUpdate={onTimeUpdate}
         onLoadedMetadata={onLoadedMetadata}
         onPlay={onPlay}

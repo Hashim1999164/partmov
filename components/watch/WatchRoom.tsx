@@ -829,16 +829,11 @@ export function WatchRoom({
               countdown={sync.countdown}
               buffering={
                 buffering ||
-                (useHls && !adaptive.ready) ||
-                (media.media?.kind === "r2" &&
-                  !uploadingCloud &&
-                  !windowed.ready &&
-                  !windowed.error &&
-                  !windowed.fallbackSrc)
+                (useHls && !adaptive.ready)
               }
               waitingPartner={sync.partnerState !== "connected" && isHost && !uploadingCloud}
               partnerName={sync.partnerName}
-              waitingMedia={!media.hasPlayableMedia && !useHls}
+              waitingMedia={!media.hasPlayableMedia && !useHls && !windowed.fallbackSrc}
               changingTitle={
                 uploadingCloud || dockTransfer ? null : changingTitle || media.changingTitle
               }
